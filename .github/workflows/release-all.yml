@@ -3,8 +3,13 @@ name: Publish Multi-Platform Release
 on:
   push:
     tags:
-      - 'v*' # Berjalan otomatis saat ada tag rilis baru seperti v2.0.0, v2.0.1, dll.
+      - 'v*' # Otomatis berjalan saat push tag baru (v2.0.0, v2.0.1, dst)
   workflow_dispatch: # Pemicu manual dari tab GitHub Actions
+    inputs:
+      tag_name:
+        description: 'Tag Versi Rilis (contoh: v2.0.0)'
+        required: true
+        default: 'v2.0.0'
 
 permissions:
   contents: write
@@ -47,6 +52,10 @@ jobs:
       - name: Upload Binaries to GitHub Release
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: ${{ inputs.tag_name || github.ref_name }}
+          name: Release ${{ inputs.tag_name || github.ref_name }}
+          draft: false
+          prerelease: false
           files: |
             dist-app/*.exe
             dist-app/*.dmg
