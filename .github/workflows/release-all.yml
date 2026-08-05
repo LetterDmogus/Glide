@@ -1,0 +1,47 @@
+name: Publish Multi-Platform Release
+
+on:
+  push:
+    tags:
+      - 'v*' # Berjalan otomatis saat ada tag rilis baru seperti v2.0.0, v2.0.1, dll.
+  workflow_dispatch: # Dan tetap bisa dipemicu secara manual jika diinginkan
+
+permissions:
+  contents: write
+
+jobs:
+  publish:
+    name: Build & Publish (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            platform: win
+          - os: macos-latest
+            platform: mac
+          - os: ubuntu-latest
+            platform: linux
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: 'npm'
+
+      - name: Install Dependencies
+        run: npm ci
+
+      - name: Build & Publish to GitHub Release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          npx vue-tsc
+          npx vite build
+          npx electron-builder --${{ matrix.platform }} --publish always
