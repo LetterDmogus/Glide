@@ -1,0 +1,95 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap');
+
+/* ─── Design Tokens ──────────────────────────────────────────── */
+:root {
+  /* Surface */
+  --bg-base:        #0f1117;
+  --bg-surface:     #161822;
+  --bg-elevated:    #1e2030;
+  --bg-overlay:     #252840;
+  --bg-hover:       #2a2d4a;
+
+  /* Brand / Accent & Dynamic Color Math */
+  --accent:         #7c6af7;
+  --accent-light:   color-mix(in srgb, var(--accent) 82%, white 18%);
+  --accent-hover:   color-mix(in srgb, var(--accent) 88%, white 12%);
+  --accent-soft:    color-mix(in srgb, var(--accent) 15%, transparent);
+  --accent-glow:    color-mix(in srgb, var(--accent) 35%, transparent);
+  --accent-2:       #4fc3f7;
+
+  /* Text */
+  --text-primary:   #e2e4f0;
+  --text-secondary: #8b8fa8;
+  --text-muted:     #555878;
+  --text-inverse:   #0f1117;
+
+  /* Border */
+  --border:         rgba(255, 255, 255, 0.07);
+  --border-focus:   color-mix(in srgb, var(--accent) 60%, transparent);
+
+  /* Status */
+  --success:        #4ade80;
+  --warning:        #fbbf24;
+  --error:          #f87171;
+  --info:           #60a5fa;
+
+  /* Sizing */
+  --sidebar-width:  240px;
+  --panel-min:      180px;
+  --titlebar-h:     38px;
+  --statusbar-h:    24px;
+  --terminal-h:     220px;
+
+  /* Easing */
+  --ease-out:       cubic-bezier(0.16, 1, 0.3, 1);
+  --ease-in-out:    cubic-bezier(0.65, 0, 0.35, 1);
+}
+
+/* ─── Reset ──────────────────────────────────────────────────── */
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+html, body, #app {
+  width: 100%; height: 100%; overflow: hidden;
+  background: var(--bg-base);
+  color: var(--text-primary);
+  font-family: 'Inter', system-ui, sans-serif;
+  font-size: 13px;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* ─── Scrollbar ──────────────────────────────────────────────── */
+::-webkit-scrollbar { width: 6px; height: 6px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: var(--bg-overlay); border-radius: 3px; }
+::-webkit-scrollbar-thumb:hover { background: var(--accent); }
+
+/* ─── Typography ─────────────────────────────────────────────── */
+code, pre, .mono { font-family: 'JetBrains Mono', 'Fira Code', monospace; }
+
+/* ─── Utility ────────────────────────────────────────────────── */
+.flex { display: flex; }
+.flex-col { display: flex; flex-direction: column; }
+.flex-1 { flex: 1; min-width: 0; min-height: 0; }
+.items-center { align-items: center; }
+.gap-1 { gap: 4px; }
+.gap-2 { gap: 8px; }
+.truncate { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.hidden { display: none !important; }
+
+/* ─── Resize Handle ──────────────────────────────────────────── */
+.resize-handle {
+  flex-shrink: 0;
+  background: var(--border);
+  transition: background 0.2s;
+  z-index: 10;
+}
+.resize-handle:hover, .resize-handle.dragging {
+  background: var(--accent);
+}
+.resize-handle.vertical {
+  width: 4px; cursor: col-resize;
+}
+.resize-handle.horizontal {
+  height: 4px; cursor: row-resize;
+}
