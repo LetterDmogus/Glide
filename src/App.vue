@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, onMounted, watch, defineAsyncComponent } from 'vue'
+import { ref, computed, onMounted, onBeforeUnmount, watch, defineAsyncComponent } from 'vue'
 import TitleBar from './components/TitleBar.vue'
 import FileExplorer from './components/FileExplorer.vue'
 import EditorPanel from './components/EditorPanel.vue'
@@ -17,7 +17,7 @@ const MendeleyGuideModal = defineAsyncComponent(() => import('./components/Mende
 const SkillsView = defineAsyncComponent(() => import('./components/SkillsView.vue'))
 import AiInlinePopup from './components/AiInlinePopup.vue'
 import { 
-  TerminalSquare, FolderOpen, Folder, FileText, FileSearchCorner, ChevronRight, LayoutDashboard, Settings, Bot
+  TerminalSquare, Folder, FileText, FileSearchCorner, LayoutDashboard, Settings, Bot
 } from 'lucide-vue-next'
 import type { FileNode } from './components/FileExplorer.vue'
 import type { GlideConfig, GlideSection } from './electron.d'
@@ -127,8 +127,20 @@ function applyGlobalAccentColor(color: string) {
   document.documentElement.style.setProperty('--accent', color)
 }
 
+const showTerminalModal = ref(false)
+
 function openExternalTerminal() {
-  window.electronAPI?.openTerminal?.(projectPath.value)
+  // Di Windows, tampilkan pilihan terminal (PowerShell, CMD, Git Bash)
+  if (navigator.userAgent.includes('Windows')) {
+    showTerminalModal.value = true
+  } else {
+    window.electronAPI?.openTerminal?.(projectPath.value)
+  }
+}
+
+function launchTerminalChoice(shellType: 'powershell' | 'cmd' | 'gitbash') {
+  showTerminalModal.value = false
+  window.electronAPI?.openTerminal?.(projectPath.value, shellType)
 }
 
 function updateSettings(next: AppSettings) {
@@ -196,6 +208,8 @@ const projectName = computed(() =>
   projectPath.value ? projectPath.value.split(/[\\/]/).pop() : undefined
 )
 
+const PlanEditor = defineAsyncComponent(() => import('./components/PlanEditor.vue'))
+
 const isMediaFile = computed(() => {
   if (!activeFile.value) return false
   const lower = activeFile.value.toLowerCase()
@@ -207,6 +221,26 @@ const isMediaFile = computed(() => {
   ]
   return mediaExts.some(ext => lower.endsWith(ext))
 })
+
+const isMarkdownFile = computed(() => {
+  if (!activeFile.value) return false
+  return activeFile.value.toLowerCase().endsWith('.md')
+})
+
+const searchQueryForProject = ref('')
+
+function triggerSearchInProject(queryText: string) {
+  searchQueryForProject.value = queryText
+  showProjectSearch.value = true
+}
+
+function openWikiFile(relPath: string) {
+  if (!projectPath.value || !relPath) return
+  const fullPath = relPath.startsWith('/') || relPath.includes(':') 
+    ? relPath 
+    : `${projectPath.value}/${relPath}`
+  openFile(fullPath)
+}
 
 const currentTabItem = computed(() => {
   return openTabs.value.find(tab => tab.path === activeFile.value)
@@ -641,12 +675,55 @@ async function triggerBuildDocx() {
   }
 }
 
-// ── Auto Restore Last Opened Project ─────────────────────────────
+// ── Auto Restore Last Opened Project & Real-Time Targeted File Watcher (AI CLI Live Sync) ──
+let unwatchFileEvents: (() => void) | null = null
+
+// Kirim daftar file tab terbuka ke Electron main process untuk dipantau secara spesifik
+watch(
+  openTabs,
+  (tabs) => {
+    const validPaths = (tabs || [])
+      .filter(t => !t.isAiChat && t.path && !t.path.startsWith('ai-explain-'))
+      .map(t => t.path)
+    window.electronAPI?.watchFiles?.(validPaths)
+  },
+  { deep: true, immediate: true }
+)
+
 onMounted(() => {
   const lastProject = localStorage.getItem('glide_last_project')
   if (lastProject) {
     loadProjectByPath(lastProject)
   }
+
+  // Live Sync saat file yang ada di tab terbuka diubah oleh AI CLI eksternal
+  if (window.electronAPI?.onFileChanged) {
+    unwatchFileEvents = window.electronAPI.onFileChanged(async ({ fullPath }) => {
+      if (!fullPath) return
+
+      // Jika file yang diubah sedang aktif dibuka di editor
+      const cleanFullPath = fullPath.replace(/\\/g, '/')
+      if (activeFile.value && activeFile.value.replace(/\\/g, '/') === cleanFullPath) {
+        const currentTab = openTabs.value.find(t => t.path === activeFile.value)
+        // Hanya update isi jika user tidak sedang memiliki un-saved local draft
+        if (!currentTab || !currentTab.isDirty) {
+          const freshContent = await window.electronAPI?.readFile?.(activeFile.value)
+          if (freshContent !== null && freshContent !== undefined) {
+            fileContent.value = freshContent
+          }
+        }
+      }
+
+      // Segarkan pratinjau Typst otomatis
+      if (projectPath.value) {
+        triggerPreview()
+      }
+    })
+  }
+})
+
+onBeforeUnmount(() => {
+  if (unwatchFileEvents) unwatchFileEvents()
 })
 
 watch([openTabs, activeFile], persistOpenTabs, { deep: true })
@@ -715,11 +792,6 @@ window.addEventListener('keydown', (e) => {
     }
   }
 })
-
-// ── Statusbar info ──────────────────────────────────────────────
-const activeFileName = computed(() =>
-  activeFile.value ? activeFile.value.split(/[\\/]/).pop() : undefined
-)
 </script>
 
 <template>
@@ -886,6 +958,14 @@ const activeFileName = computed(() =>
               v-else-if="activeFile && isMediaFile"
               :file-path="activeFile"
             />
+            <PlanEditor
+              v-else-if="activeFile && isMarkdownFile"
+              :file-path="activeFile"
+              :content="fileContent"
+              @change="onEditorChange"
+              @save="saveFile"
+              @open-file="openWikiFile"
+            />
             <EditorPanel
               v-else
               ref="editorRef"
@@ -895,6 +975,7 @@ const activeFileName = computed(() =>
               :line-wrapping="settings.lineWrapping"
               @change="onEditorChange"
               @save="saveFile"
+              @search-project="triggerSearchInProject"
             />
           </div>
 
@@ -921,24 +1002,44 @@ const activeFileName = computed(() =>
     </div>
 
     <SettingsView v-if="showSettings" :settings="settings" @update="updateSettings" @close="showSettings = false" />
-    <ProjectSearch v-if="showProjectSearch" :project-path="projectPath" @close="showProjectSearch = false" @open="openProjectSearchFile" />
+    <ProjectSearch 
+      v-if="showProjectSearch" 
+      :project-path="projectPath" 
+      :initial-query="searchQueryForProject" 
+      @close="showProjectSearch = false" 
+      @open="openProjectSearchFile" 
+    />
 
-    <!-- Status Bar -->
-    <div class="status-bar">
-      <div class="status-left">
-        <button class="status-btn" @click="openFolder">
-          <FolderOpen :size="12" />
-          <span>{{ projectName || 'Buka Project' }}</span>
-        </button>
-        <span v-if="activeFileName" class="status-item">
-          <ChevronRight :size="11" />
-          {{ activeFileName }}
-        </span>
-      </div>
-      <div class="status-right">
-        <span class="status-item" style="color: var(--text-secondary)">Glide with Typst</span>
+    <!-- Terminal Selection Modal (Windows) -->
+    <div v-if="showTerminalModal" class="terminal-modal-overlay" @click.self="showTerminalModal = false">
+      <div class="terminal-modal-card">
+        <div class="terminal-modal-header">
+          <TerminalSquare :size="16" class="icon-accent" />
+          <h3>Pilih Terminal External</h3>
+        </div>
+        <p class="terminal-modal-desc">Buka direktori proyek aktif di terminal Windows pilihan Anda:</p>
+        
+        <div class="terminal-options-list">
+          <button class="terminal-opt-btn" @click="launchTerminalChoice('powershell')">
+            <span class="opt-title">PowerShell</span>
+            <span class="opt-sub">powershell.exe (Rekomendasi Default)</span>
+          </button>
+          
+          <button class="terminal-opt-btn" @click="launchTerminalChoice('cmd')">
+            <span class="opt-title">Command Prompt</span>
+            <span class="opt-sub">cmd.exe (Windows Standard)</span>
+          </button>
+
+          <button class="terminal-opt-btn" @click="launchTerminalChoice('gitbash')">
+            <span class="opt-title">Git Bash</span>
+            <span class="opt-sub">git-bash.exe (Unix Emulation)</span>
+          </button>
+        </div>
+
+        <button class="terminal-cancel-btn" @click="showTerminalModal = false">Batal</button>
       </div>
     </div>
+
     <!-- Skills & AI Rules Store View -->
     <SkillsView
       v-if="showSkillsModal"
@@ -1233,38 +1334,102 @@ const activeFileName = computed(() =>
   border-radius: 8px !important;
 }
 
-/* Status Bar */
-.status-bar {
-  height: var(--statusbar-h);
-  background: var(--bg-base);
+
+
+/* Terminal Options Modal (Windows) */
+.terminal-modal-overlay {
+  position: fixed;
+  top: 0; left: 0; right: 0; bottom: 0;
+  background: rgba(0, 0, 0, 0.65);
+  backdrop-filter: blur(4px);
+  z-index: 9999;
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  padding: 0 10px;
-  flex-shrink: 0;
+  justify-content: center;
+  animation: fadeIn 0.15s ease-out;
 }
-.status-left, .status-right {
+
+.terminal-modal-card {
+  width: 360px;
+  max-width: 90vw;
+  background: #181a26;
+  border: 1px solid var(--border-focus);
+  border-radius: 10px;
+  padding: 18px;
+  box-shadow: 0 16px 40px rgba(0, 0, 0, 0.7);
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.terminal-modal-header {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 8px;
 }
-.status-item {
+.terminal-modal-header h3 {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--accent-light);
+  margin: 0;
+}
+
+.terminal-modal-desc {
+  font-size: 11.5px;
+  color: #94a3b8;
+  margin: 0;
+  line-height: 1.4;
+}
+
+.terminal-options-list {
   display: flex;
-  align-items: center;
-  gap: 4px;
-  font-size: 11px;
-  color: rgba(255,255,255,0.85);
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 4px;
 }
-.status-btn {
+
+.terminal-opt-btn {
   display: flex;
-  align-items: center;
-  gap: 5px;
-  border: none; background: transparent;
-  color: rgba(255,255,255,0.9);
-  font-size: 11px; font-family: inherit;
-  cursor: pointer; padding: 0 4px;
-  border-radius: 3px;
-  transition: background 0.15s;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  padding: 10px 12px;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 6px;
+  cursor: pointer;
+  text-align: left;
+  transition: all 0.15s ease;
 }
-.status-btn:hover { background: rgba(255,255,255,0.15); }
+
+.terminal-opt-btn:hover {
+  background: var(--accent-soft);
+  border-color: var(--border-focus);
+}
+
+.opt-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: #f1f5f9;
+}
+
+.opt-sub {
+  font-size: 10.5px;
+  color: #94a3b8;
+}
+
+.terminal-cancel-btn {
+  align-self: flex-end;
+  background: transparent;
+  border: none;
+  color: #64748b;
+  font-size: 12px;
+  cursor: pointer;
+  padding: 4px 8px;
+  border-radius: 4px;
+}
+.terminal-cancel-btn:hover {
+  color: #f1f5f9;
+  background: rgba(255, 255, 255, 0.08);
+}
 </style>

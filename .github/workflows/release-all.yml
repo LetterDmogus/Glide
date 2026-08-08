@@ -23,10 +23,6 @@ jobs:
         include:
           - os: windows-latest
             platform: win
-          - os: macos-latest
-            platform: mac
-          - os: ubuntu-latest
-            platform: linux
 
     runs-on: ${{ matrix.os }}
 
@@ -58,9 +54,5 @@ jobs:
           prerelease: false
           files: |
             dist-app/*.exe
-            dist-app/*.dmg
-            dist-app/*.zip
-            dist-app/*.AppImage
-            dist-app/*.deb
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

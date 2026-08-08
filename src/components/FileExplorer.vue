@@ -167,6 +167,35 @@ function closeContextMenu() {
   contextMenu.value.show = false
 }
 
+function isImageFile(fileName: string): boolean {
+  if (!fileName) return false
+  const lower = fileName.toLowerCase()
+  return ['.png', '.jpg', '.jpeg', '.gif', '.svg', '.webp'].some(ext => lower.endsWith(ext))
+}
+
+async function copyGlideFigureTag() {
+  const node = contextMenu.value.node
+  if (!node) return
+
+  let relPath = node.path
+  if (props.projectPath) {
+    const normalizedPath = node.path.replace(/\\/g, '/')
+    const normalizedRoot = props.projectPath.replace(/\\/g, '/').replace(/\/$/, '')
+    if (normalizedPath.startsWith(`${normalizedRoot}/`)) {
+      relPath = normalizedPath.slice(normalizedRoot.length + 1)
+    }
+  }
+
+  // Ambil nama file tanpa ekstensi untuk dijadikan caption
+  const rawName = node.name.split('.')[0].replace(/[-_]/g, ' ')
+  const caption = rawName.charAt(0).toUpperCase() + rawName.slice(1)
+
+  const figureTag = `#glide-figure("${relPath}", [${caption}], width: 70%)`
+
+  await navigator.clipboard.writeText(figureTag)
+  closeContextMenu()
+}
+
 async function copyNodePath(relative = false) {
   const node = contextMenu.value.node
   if (!node) return
@@ -371,6 +400,9 @@ function onDrop(e: DragEvent) {
         <span>Show Hidden Files</span>
       </button>
       <div v-if="contextMenu.node" class="context-divider"></div>
+      <button v-if="contextMenu.node && contextMenu.node.type === 'file' && isImageFile(contextMenu.node.name)" class="context-item" @click="copyGlideFigureTag">
+        <span>Copy Glide Figure Tag</span>
+      </button>
       <button v-if="contextMenu.node" class="context-item" @click="copyNodePath(false)">
         <span>{{ contextMenu.node.type === 'dir' ? 'Copy Folder Path' : 'Copy Path' }}</span>
       </button>

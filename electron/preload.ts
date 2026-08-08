@@ -25,7 +25,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   saveBib:     (projectDir: string, entries: any[]) => ipcRenderer.invoke('bib:save', projectDir, entries),
 
   // External OS Terminal (PowerShell / CMD)
-  openTerminal: (cwd?: string) => ipcRenderer.invoke('system:openTerminal', cwd),
+  openTerminal: (cwd?: string, shellType?: 'powershell' | 'cmd' | 'gitbash') => ipcRenderer.invoke('system:openTerminal', cwd, shellType),
 
   // Typst PDF Build & Preview
   checkTypstStatus: () => ipcRenderer.invoke('typst:checkStatus'),
@@ -40,4 +40,12 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // Skills & AI Rules Manager
   listSkills:   (projectPath?: string) => ipcRenderer.invoke('skills:list', projectPath),
   installSkill: (projectPath: string, skillName: string) => ipcRenderer.invoke('skills:install', projectPath, skillName),
+
+  // File System Watcher Listener (Targeted per file di tab)
+  watchFiles: (filePaths: string[]) => ipcRenderer.invoke('watcher:watchFiles', filePaths),
+  onFileChanged: (callback: (data: { eventType: string; fullPath: string }) => void) => {
+    const handler = (_e: any, data: any) => callback(data)
+    ipcRenderer.on('fs:file-changed', handler)
+    return () => ipcRenderer.removeListener('fs:file-changed', handler)
+  }
 })

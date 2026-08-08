@@ -14,6 +14,16 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url))
 
 process.env.APP_ROOT = path.join(__dirname, '..')
 
+export function getAppResourcePath(...subPaths: string[]): string {
+  if (app.isPackaged) {
+    // Mode Production: extraResources berada di process.resourcesPath
+    const resourcePath = path.join(process.resourcesPath, ...subPaths)
+    return resourcePath
+  }
+  // Mode Development
+  return path.join(process.env.APP_ROOT, ...subPaths)
+}
+
 export const VITE_DEV_SERVER_URL = process.env['VITE_DEV_SERVER_URL']
 export const MAIN_DIST = path.join(process.env.APP_ROOT, 'dist-electron')
 export const RENDERER_DIST = path.join(process.env.APP_ROOT, 'dist')
@@ -30,6 +40,36 @@ app.commandLine.appendSwitch('disable-gpu-shader-disk-cache')
 let win: BrowserWindow | null
 // Map multi-session terminal: id -> pty.IPty
 const ptySessions = new Map<string, pty.IPty>()
+const activeFileWatchers = new Map<string, any>()
+
+ipcMain.handle('watcher:watchFiles', async (_e, filePaths: string[]) => {
+  // Tutup watcher lama yang tidak ada di daftar filePaths baru
+  const newPathSet = new Set((filePaths || []).map(p => path.normalize(p)))
+  for (const [watchedPath, watcher] of activeFileWatchers.entries()) {
+    if (!newPathSet.has(watchedPath)) {
+      try { watcher.close() } catch {}
+      activeFileWatchers.delete(watchedPath)
+    }
+  }
+
+  // Pasang watcher khusus untuk file yang ada di tab saja
+  const fsSync = await import('node:fs')
+  for (const p of newPathSet) {
+    if (!activeFileWatchers.has(p)) {
+      try {
+        let debounceTimer: any = null
+        const w = fsSync.watch(p, (eventType) => {
+          if (debounceTimer) clearTimeout(debounceTimer)
+          debounceTimer = setTimeout(() => {
+            win?.webContents.send('fs:file-changed', { eventType, fullPath: p })
+          }, 150)
+        })
+        activeFileWatchers.set(p, w)
+      } catch {}
+    }
+  }
+  return true
+})
 
 function createWindow() {
   win = new BrowserWindow({
@@ -131,15 +171,38 @@ ipcMain.handle('terminal:resize', (_e, id: string, cols: number, rows: number) =
   }
 })
 
-ipcMain.handle('system:openTerminal', async (_e, cwd?: string) => {
+ipcMain.handle('system:openTerminal', async (_e, cwd?: string, shellType: 'powershell' | 'cmd' | 'gitbash' = 'powershell') => {
   const { exec, spawn } = await import('node:child_process')
   const targetDir = cwd && cwd.trim() ? cwd : os.homedir()
 
   try {
     if (os.platform() === 'win32') {
-      // Gunakan 'start powershell' via cmd agar jendela GUI PowerShell langsung pop-up
       const safePath = targetDir.replace(/'/g, "''")
-      exec(`start powershell -NoExit -Command "Set-Location -LiteralPath '${safePath}'"`, { cwd: targetDir })
+      if (shellType === 'cmd') {
+        exec(`start cmd /k "cd /d \"${targetDir}\""`, { cwd: targetDir })
+      } else if (shellType === 'gitbash') {
+        const gitBashPaths = [
+          'C:\\Program Files\\Git\\git-bash.exe',
+          'C:\\Program Files (x86)\\Git\\git-bash.exe',
+          process.env.LOCALAPPDATA + '\\Programs\\Git\\git-bash.exe'
+        ]
+        let found = false
+        const fsSync = await import('node:fs')
+        for (const p of gitBashPaths) {
+          if (fsSync.existsSync(p)) {
+            spawn(p, [`--cd=${targetDir}`], { detached: true, stdio: 'ignore' }).unref()
+            found = true
+            break
+          }
+        }
+        // Fallback to powershell if Git Bash is not installed
+        if (!found) {
+          exec(`start powershell -NoExit -Command "Set-Location -LiteralPath '${safePath}'"`, { cwd: targetDir })
+        }
+      } else {
+        // Default PowerShell
+        exec(`start powershell -NoExit -Command "Set-Location -LiteralPath '${safePath}'"`, { cwd: targetDir })
+      }
     } else if (os.platform() === 'darwin') {
       const child = spawn('open', ['-a', 'Terminal', targetDir], { detached: true, stdio: 'ignore' })
       child.unref()
@@ -198,24 +261,24 @@ ipcMain.handle('typst:checkStatus', async () => {
 })
 
 ipcMain.handle('typst:build', async (_e, projectDir: string, outputPdfPath: string) => {
-  return await compileTypstToPdf(folderPathOrRoot(projectDir), process.env.APP_ROOT || process.cwd(), outputPdfPath)
+  return await compileTypstToPdf(folderPathOrRoot(projectDir), getAppResourcePath(), outputPdfPath)
 })
 
 ipcMain.handle('pandoc:buildDocx', async (_e, projectDir: string, outputDocxPath: string) => {
-  return await compileGlideToDocx(folderPathOrRoot(projectDir), process.env.APP_ROOT || process.cwd(), outputDocxPath)
+  return await compileGlideToDocx(folderPathOrRoot(projectDir), getAppResourcePath(), outputDocxPath)
 })
 
 // ── Skills & AI Rules Manager IPC ──────────────────────────────
 ipcMain.handle('skills:list', async (_e, projectPath?: string) => {
-  return await listAvailableSkills(process.env.APP_ROOT || process.cwd(), projectPath)
+  return await listAvailableSkills(getAppResourcePath(), projectPath)
 })
 
 ipcMain.handle('skills:install', async (_e, projectPath: string, skillName: string) => {
-  return await installSkillToProject(process.env.APP_ROOT || process.cwd(), projectPath, skillName)
+  return await installSkillToProject(getAppResourcePath(), projectPath, skillName)
 })
 
 ipcMain.handle('typst:preview', async (_e, projectDir: string) => {
-  return await compileTypstToSvgPages(folderPathOrRoot(projectDir), process.env.APP_ROOT || process.cwd())
+  return await compileTypstToSvgPages(folderPathOrRoot(projectDir), getAppResourcePath())
 })
 
 function folderPathOrRoot(dirPath: string): string {
@@ -233,7 +296,7 @@ ipcMain.handle('dialog:openFolder', async (_e, showHidden = false) => {
   
   const isGlide = await isGlideProject(folderPath)
   if (isGlide) {
-    await ensureThemeInProject(folderPath, process.env.APP_ROOT || process.cwd())
+    await ensureThemeInProject(folderPath, getAppResourcePath())
   }
 
   const tree = await buildFileTree(folderPath, 0, showHidden)
@@ -246,8 +309,9 @@ ipcMain.handle('dialog:openFolder', async (_e, showHidden = false) => {
 ipcMain.handle('project:load', async (_e, folderPath: string, showHidden = false) => {
   const isGlide = await isGlideProject(folderPath)
   if (isGlide) {
-    await ensureThemeInProject(folderPath, process.env.APP_ROOT || process.cwd())
+    await ensureThemeInProject(folderPath, getAppResourcePath())
   }
+
   const config = isGlide ? await loadGlideConfig(folderPath) : null
   const sections = isGlide ? await getGlideSections(folderPath) : []
   const tree = await buildFileTree(folderPath, 0, showHidden)

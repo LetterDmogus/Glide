@@ -1,10 +1,10 @@
 <script setup lang="ts">
-import { ref } from 'vue'
+import { ref, onMounted } from 'vue'
 import { Search, X, Regex } from 'lucide-vue-next'
 
-const props = defineProps<{ projectPath?: string }>()
+const props = defineProps<{ projectPath?: string; initialQuery?: string }>()
 const emit = defineEmits<{ close: []; open: [path: string] }>()
-const query = ref('')
+const query = ref(props.initialQuery || '')
 const regex = ref(false)
 const caseSensitive = ref(false)
 const loading = ref(false)
@@ -18,6 +18,12 @@ async function search() {
   }) || []
   loading.value = false
 }
+
+onMounted(() => {
+  if (query.value.trim()) {
+    search()
+  }
+})
 
 function fileName(path: string) { return path.split(/[\\/]/).pop() || path }
 function relativePath(path: string) {

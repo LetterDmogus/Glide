@@ -115,16 +115,24 @@ export async function ensureThemeInProject(projectDir: string, appRoot: string):
 }
 
 async function copyDirectory(src: string, dest: string) {
-  await fs.mkdir(dest, { recursive: true })
-  const entries = await fs.readdir(src, { withFileTypes: true })
-  for (const entry of entries) {
-    const srcPath = path.join(src, entry.name)
-    const destPath = path.join(dest, entry.name)
-    if (entry.isDirectory()) {
-      await copyDirectory(srcPath, destPath)
-    } else {
-      await fs.copyFile(srcPath, destPath)
+  try {
+    await fs.mkdir(dest, { recursive: true })
+    const entries = await fs.readdir(src, { withFileTypes: true })
+    for (const entry of entries) {
+      const srcPath = path.join(src, entry.name)
+      const destPath = path.join(dest, entry.name)
+      if (entry.isDirectory()) {
+        await copyDirectory(srcPath, destPath)
+      } else if (entry.isFile()) {
+        try {
+          await fs.copyFile(srcPath, destPath)
+        } catch (copyErr) {
+          // Abaikan EPERM/EBUSY saat file sedang terkunci
+        }
+      }
     }
+  } catch (err) {
+    // Catch top-level directory errors
   }
 }
 

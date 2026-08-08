@@ -3,7 +3,7 @@ import { ref, onMounted, nextTick } from 'vue'
 import { aiSettings } from '../utils/settings'
 import { 
   Sparkles, X, Check, ArrowDownRight, CornerDownLeft, RefreshCw,
-  FileText, Scissors, RotateCcw, AlertTriangle, Bug
+  FileText, Scissors, RotateCcw, AlertTriangle, Bug, Search
 } from 'lucide-vue-next'
 
 interface ChatMessage {
@@ -21,6 +21,7 @@ const emit = defineEmits<{
   'close': []
   'replace': [newText: string]
   'insert-below': [newText: string]
+  'search-project': [query: string]
 }>()
 
 const customPrompt = ref('')
@@ -161,15 +162,27 @@ onMounted(() => {
     <div class="popup-header">
       <div class="header-tag">
         <Bug v-if="explainError" :size="13" class="icon-error" />
-        <Sparkles v-else :size="13" class="icon-accent" />
-        <span>{{ explainError ? 'Explain Error' : 'Glide AI Assistant' }}</span>
+        <Sparkles v-else-if="aiSettings.enabled" :size="13" class="icon-accent" />
+        <Search v-else :size="13" class="icon-accent" />
+        <span>{{ explainError ? 'Explain Error' : (aiSettings.enabled ? 'Glide AI' : 'Selection Actions') }}</span>
       </div>
-      <button class="close-btn" @click="emit('close')" title="Tutup">
-        <X :size="13" />
-      </button>
+      <div class="header-right-actions">
+        <button 
+          v-if="selectedText" 
+          class="header-search-btn" 
+          @click="emit('search-project', selectedText); emit('close')" 
+          title="Cari kemunculan kata ini di seluruh proyek"
+        >
+          <Search :size="12" />
+          <span>Cari di Proyek</span>
+        </button>
+        <button class="close-btn" @click="emit('close')" title="Tutup">
+          <X :size="13" />
+        </button>
+      </div>
     </div>
 
-    <div class="popup-body">
+    <div v-if="aiSettings.enabled || explainError" class="popup-body">
       <!-- Error Preview Box (Jika mode Explain Error) -->
       <div v-if="explainError" class="error-preview-box">
         <pre>{{ explainError }}</pre>
@@ -191,7 +204,7 @@ onMounted(() => {
         </button>
       </div>
 
-      <!-- Chat History Container -->
+      <!-- Chat History Container (Scrollable) -->
       <div v-if="chatMessages.length > 0" ref="chatContainer" class="chat-history custom-scroll">
         <div 
           v-for="(msg, idx) in chatMessages" 
@@ -216,31 +229,32 @@ onMounted(() => {
         <span>{{ errorMessage }}</span>
       </div>
 
-      <!-- Result Action Buttons (Ganti Teks / Tempel di Bawah) -->
-      <div v-if="getLastAssistantContent() && !explainError" class="result-actions">
-        <button class="btn btn-primary" @click="emit('replace', getLastAssistantContent())">
-          <Check :size="13" />
-          <span>Ganti Teks</span>
-        </button>
-        <button class="btn btn-secondary" @click="emit('insert-below', getLastAssistantContent())">
-          <ArrowDownRight :size="13" />
-          <span>Tempel di Bawah</span>
-        </button>
-      </div>
+      <!-- Footer Area: Result Action Buttons & Persistent Prompt Input -->
+      <div class="popup-footer">
+        <div v-if="getLastAssistantContent() && !explainError" class="result-actions">
+          <button class="btn btn-primary" @click="emit('replace', getLastAssistantContent())">
+            <Check :size="13" />
+            <span>Ganti Teks</span>
+          </button>
+          <button class="btn btn-secondary" @click="emit('insert-below', getLastAssistantContent())">
+            <ArrowDownRight :size="13" />
+            <span>Tempel di Bawah</span>
+          </button>
+        </div>
 
-      <!-- Persistent Custom Prompt Input (Selalu Bisa Lanjut Chat) -->
-      <div class="custom-prompt-row">
-        <input 
-          type="text" 
-          v-model="customPrompt" 
-          :placeholder="chatMessages.length > 0 ? 'Ketik balasan atau pertanyaan lanjutan...' : (explainError ? 'Tanyakan lebih lanjut tentang error...' : 'Instruksi khusus... (tekan Enter)')" 
-          class="prompt-input"
-          :disabled="isGenerating"
-          @keydown.enter="handleCustomSubmit"
-        />
-        <button class="send-btn" @click="handleCustomSubmit" :disabled="!customPrompt.trim() || isGenerating">
-          <CornerDownLeft :size="13" />
-        </button>
+        <div class="custom-prompt-row">
+          <input 
+            type="text" 
+            v-model="customPrompt" 
+            :placeholder="chatMessages.length > 0 ? 'Ketik balasan atau pertanyaan lanjutan...' : (explainError ? 'Tanyakan lebih lanjut tentang error...' : 'Instruksi khusus... (tekan Enter)')" 
+            class="prompt-input"
+            :disabled="isGenerating"
+            @keydown.enter="handleCustomSubmit"
+          />
+          <button class="send-btn" @click="handleCustomSubmit" :disabled="!customPrompt.trim() || isGenerating">
+            <CornerDownLeft :size="13" />
+          </button>
+        </div>
       </div>
     </div>
   </div>
@@ -282,6 +296,31 @@ onMounted(() => {
   font-size: 11.5px;
   font-weight: 600;
   color: var(--accent-light);
+}
+
+.header-right-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.header-search-btn {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  background: rgba(124, 106, 247, 0.15);
+  border: 1px solid var(--border-focus);
+  color: #fff;
+  border-radius: 4px;
+  padding: 3px 8px;
+  font-size: 10.5px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+
+.header-search-btn:hover {
+  background: var(--accent);
 }
 
 .close-btn {
@@ -478,10 +517,18 @@ onMounted(() => {
   flex-direction: column;
   gap: 8px;
   flex: 1;
-  min-height: 120px;
-  max-height: 350px;
+  min-height: 100px;
+  max-height: 280px;
   overflow-y: auto;
   padding-right: 4px;
+}
+
+.popup-footer {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: auto;
+  padding-top: 4px;
 }
 
 .chat-bubble {

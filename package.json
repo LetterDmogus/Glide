@@ -1,7 +1,7 @@
 {
   "name": "glide",
   "productName": "Glide",
-  "version": "2.0.0",
+  "version": "2.1.0",
   "description": "Modern Academic Report Editor & Compiler Powered by Typst",
   "author": "FloatyCandy <floatycandy@gmail.com>",
   "private": true,
@@ -54,7 +54,8 @@
     },
     "files": [
       "dist/**/*",
-      "dist-electron/**/*"
+      "dist-electron/**/*",
+      "themes/**/*"
     ],
     "extraResources": [
       {

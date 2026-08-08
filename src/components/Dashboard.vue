@@ -1,7 +1,7 @@
 <script setup lang="ts">
-import { ref, onMounted } from 'vue'
+import { ref, onMounted, onBeforeUnmount } from 'vue'
 import { 
-  FolderOpen, PlusCircle, Trash2
+  FolderOpen, PlusCircle, Trash2,
 } from 'lucide-vue-next'
 
 export interface RecentProject {
@@ -18,6 +18,8 @@ const emit = defineEmits<{
 }>()
 
 const recents = ref<RecentProject[]>([])
+const canvasRef = ref<HTMLCanvasElement | null>(null)
+let animId: number | null = null
 
 function loadRecents() {
   try {
@@ -36,24 +38,114 @@ function removeRecent(path: string, e: Event) {
   localStorage.setItem('glide_recent_projects', JSON.stringify(recents.value))
 }
 
+// ── Highly Optimized Canvas Star Rain Animation ──────────────────
+interface Star {
+  x: number
+  y: number
+  length: number
+  speed: number
+  opacity: number
+  width: number
+}
+
+function initStarRain() {
+  const canvas = canvasRef.value
+  if (!canvas) return
+  const ctx = canvas.getContext('2d')
+  if (!ctx) return
+
+  let width = (canvas.width = canvas.parentElement?.clientWidth || 800)
+  let height = (canvas.height = 240)
+
+  const stars: Star[] = []
+  const maxStars = 45
+
+  for (let i = 0; i < maxStars; i++) {
+    stars.push({
+      x: Math.random() * width,
+      y: Math.random() * height,
+      length: Math.random() * 25 + 30,
+      speed: Math.random() * 1.5 + 0.8,
+      opacity: Math.random() * 0.7 + 0.3,
+      width: Math.random() * 1.2 + 0.6
+    })
+  }
+
+  function render() {
+    ctx!.clearRect(0, 0, width, height)
+
+    for (let i = 0; i < stars.length; i++) {
+      const s = stars[i]
+      s.y += s.speed
+      s.x += s.speed * 0.5
+
+      if (s.y > height || s.x > width + 50) {
+        s.y = -s.length
+        s.x = Math.random() * (width + 200) - 100
+      }
+
+      // Smooth Fade-out saat mendekati batas bawah canvas (fade out mulai dari 60% height)
+      let fadeFactor = 1
+      if (s.y > height * 0.6) {
+        fadeFactor = Math.max(0, 1 - (s.y - height * 0.6) / (height * 0.4))
+      }
+
+      const currentOpacity = s.opacity * fadeFactor
+      if (currentOpacity <= 0.01) continue
+
+      // Sudut miring konsisten meluncur ke kanan bawah
+      const tailX = s.x - s.length * 0.4
+      const tailY = s.y - s.length * 0.9
+
+      const grad = ctx!.createLinearGradient(s.x, s.y, tailX, tailY)
+      grad.addColorStop(0, `rgba(167, 139, 250, ${currentOpacity})`)
+      grad.addColorStop(1, 'rgba(124, 106, 247, 0)')
+
+      ctx!.beginPath()
+      ctx!.strokeStyle = grad
+      ctx!.lineWidth = s.width
+      ctx!.moveTo(s.x, s.y)
+      ctx!.lineTo(tailX, tailY)
+      ctx!.stroke()
+    }
+
+    animId = requestAnimationFrame(render)
+  }
+
+  const handleResize = () => {
+    if (!canvas || !canvas.parentElement) return
+    width = canvas.width = canvas.parentElement.clientWidth
+  }
+  window.addEventListener('resize', handleResize)
+
+  render()
+}
+
 onMounted(() => {
   loadRecents()
+  initStarRain()
+})
+
+onBeforeUnmount(() => {
+  if (animId) cancelAnimationFrame(animId)
 })
 </script>
 
 <template>
   <div class="welcome">
+    <div class="hero-canvas-wrapper">
+      <canvas ref="canvasRef" class="star-canvas"></canvas>
+    </div>
+
     <div class="welcome-container">
-      <!-- Title -->
       <div class="welcome-header">
         <h1 class="app-name">Glide</h1>
-        <span class="sub-text">Version 2.0</span>
+        <span class="sub-text">Version 2.1</span>
       </div>
       <div class="sub-container">
         <span class="sub-text">Aplikasi ini masih pada fase pengembangan, ekspetasi akan ada banyak bug. Jika kamu menemukan bug atau memiliki saran pengembangan, silahkan contact email floatycandy@gmail.com. Kontribusi kamu sangat beharga, terima kasih!</span>
       </div>
 
-      <!-- Start Section -->
       <div class="section-block">
         <h2 class="section-heading">Start</h2>
         <div class="start-links">
@@ -68,7 +160,7 @@ onMounted(() => {
         </div>
       </div>
 
-      <!-- Recent Section -->
+      <!-- Recent Section (Style Lama) -->
       <div class="section-block">
         <h2 class="section-heading">Recent</h2>
         <div v-if="recents.length > 0" class="recent-links">
@@ -112,6 +204,24 @@ onMounted(() => {
   padding: 60px 80px;
   overflow-y: auto;
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  position: relative;
+}
+
+.hero-canvas-wrapper {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 130px;
+  background: linear-gradient(180deg, #06070b 0%, rgba(15, 17, 23, 0) 100%);
+  pointer-events: none;
+  z-index: 5;
+}
+
+.star-canvas {
+  width: 100%;
+  height: 100%;
+  opacity: 1;
 }
 
 .welcome-container {
@@ -120,12 +230,15 @@ onMounted(() => {
   display: flex;
   flex-direction: column;
   gap: 32px;
+  position: relative;
+  z-index: 1;
 }
+
 .sub-container {
   padding-bottom: 16px;
 }
 
-/* Header */
+/* Header (Style Asli) */
 .welcome-header {
   display: flex;
   align-items: baseline;
@@ -145,7 +258,7 @@ onMounted(() => {
   color: #858585;
 }
 
-/* Section Block */
+/* Section Block (Style Asli) */
 .section-block {
   display: flex;
   flex-direction: column;
@@ -159,7 +272,7 @@ onMounted(() => {
   margin: 0;
 }
 
-/* Start Links */
+/* Start Links (Style Asli) */
 .start-links {
   display: flex;
   flex-direction: column;
@@ -191,7 +304,7 @@ onMounted(() => {
   flex-shrink: 0;
 }
 
-/* Recent Links */
+/* Recent Links (Style Asli) */
 .recent-links {
   display: flex;
   flex-direction: column;

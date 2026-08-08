@@ -9,12 +9,11 @@ import { typst } from 'codemirror-lang-typst'
 import { oneDark } from '@codemirror/theme-one-dark'
 import { keymap } from '@codemirror/view'
 import { indentWithTab, undo, redo, selectAll } from '@codemirror/commands'
-import { search, openSearchPanel, searchKeymap } from '@codemirror/search'
+import { search, openSearchPanel, searchKeymap, selectSelectionMatches } from '@codemirror/search'
 import { FileText } from 'lucide-vue-next'
 
 import SymbolPalette from './SymbolPalette.vue'
 import AiInlinePopup from './AiInlinePopup.vue'
-import { aiSettings } from '../utils/settings'
 
 const typstCompletions: Completion[] = [
   { label: '#set', type: 'keyword', detail: 'set rule' },
@@ -61,6 +60,7 @@ const props = defineProps<{
 const emit = defineEmits<{
   'change': [content: string]
   'save': [content: string]
+  'search-project': [query: string]
 }>()
 
 const editorEl = ref<HTMLElement | null>(null)
@@ -184,7 +184,7 @@ const selectedText = ref('')
 const aiPopupPos = ref({ top: 0, left: 0 })
 
 function checkAiSelection() {
-  if (!aiSettings.value.enabled || !editorView) {
+  if (!editorView) {
     showAiPopup.value = false
     return
   }
@@ -255,13 +255,20 @@ function buildState(content: string, path?: string) {
       basicSetup,
       oneDark,
       glideTheme,
+      EditorState.allowMultipleSelections.of(true),
+      EditorView.clickAddsSelectionRange.of(e => e.altKey || e.ctrlKey || e.metaKey),
       // Wrap long lines visually without changing the document content.
       ...(props.lineWrapping !== false ? [EditorView.lineWrapping] : []),
       closeBrackets(),
       autocompletion({ override: [typstCompletionSource] }),
       search({ top: true }),
       getLanguageExtension(path),
-      keymap.of([indentWithTab, ...closeBracketsKeymap, ...searchKeymap]),
+      keymap.of([
+        indentWithTab, 
+        ...closeBracketsKeymap, 
+        ...searchKeymap,
+        { key: 'Mod-d', run: selectSelectionMatches }
+      ]),
       EditorView.updateListener.of(update => {
         if (update.docChanged) {
           emit('change', update.state.doc.toString())
@@ -387,6 +394,7 @@ watch(() => props.content, (val) => {
       @close="showAiPopup = false"
       @replace="handleAiReplace"
       @insert-below="handleAiInsertBelow"
+      @search-project="(q) => emit('search-project', q)"
     />
   </div>
 </template>

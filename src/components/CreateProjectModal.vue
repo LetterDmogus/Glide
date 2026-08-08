@@ -36,7 +36,14 @@ async function handleCreate() {
   errorMsg.value = null
 
   try {
-    const pDir = targetDir.value
+    const parentDir = targetDir.value
+    // Sanitize judul untuk dijadikan nama subfolder proyek (misal: "Laporan Tugas 1" -> "Laporan-Tugas-1")
+    const folderName = title.value.trim().replace(/[/\\?%*:|"<>]/g, '').replace(/\s+/g, '-') || 'Proyek-Glide'
+    const pDir = `${parentDir}/${folderName}`
+
+    // Buat direktori subfolder proyek utama
+    await window.electronAPI?.createDir?.(pDir)
+
     // Create config.yaml
     const configYaml = `# ╔══════════════════════════════════════════════╗
 # ║          GLD Next — Konfigurasi Proyek       ║
@@ -147,7 +154,7 @@ glide2026:
 </script>
 
 <template>
-  <div class="modal-overlay" @click.self="emit('close')">
+  <div class="modal-overlay">
     <div class="modal-card">
       <!-- Modal Header -->
       <div class="modal-header">

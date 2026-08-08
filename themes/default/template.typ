@@ -112,6 +112,13 @@
   // Set List & Enumeration properties
   set list(indent: 0pt, body-indent: list_indent)
   set enum(indent: 0pt, body-indent: list_indent)
+  
+  // Custom TOC logic: Set state when rendering outline
+  show outline: it => {
+    is-outline.update(true)
+    it
+    is-outline.update(false)
+  }
 
   // Set headings
   show heading.where(level: 1): it => {
@@ -132,9 +139,13 @@
 
 // Helper for figures
 #let glide-figure(src, caption, width: 80%, height: auto) = {
-  let full_src = if src.starts-with("/") { src } else { "/" + src }
+  // Let the figure be static so it can be referenced (no outer context block)
   figure(
-    image(full_src, width: width, height: height),
+    context {
+      let root = project_root_dir.get()
+      let full_src = if src.starts-with("/") { src } else { root + "/" + src }
+      image(full_src, width: width, height: height)
+    },
     caption: caption,
   )
 }
@@ -159,15 +170,22 @@
 // Helper for Bab Heading (different TOC vs Doc)
 #let glide-bab(toc: none, body) = {
   pagebreak(weak: true)
-  if toc != none {
-    heading(level: 1, toc)
-  } else {
-    heading(level: 1, body)
-  }
+  heading(level: 1)[
+    #context {
+      if is-outline.get() and toc != none {
+        toc
+      } else {
+        body
+      }
+    }
+  ]
 }
 
 // Helper for bibliography
 #let glide-bib(path) = {
-  let full_path = if path.starts-with("/") { path } else { "/" + path }
-  bibliography(full_path)
+  context {
+    let root = project_root_dir.get()
+    let full_path = if path.starts-with("/") { path } else { root + "/" + path }
+    bibliography(full_path)
+  }
 }

@@ -66,7 +66,7 @@ interface ElectronAPI {
   listImages:  (path: string) => Promise<{ name: string; path: string }[]>
   readBib:     (projectDir: string) => Promise<any[]>
   saveBib:     (projectDir: string, entries: any[]) => Promise<boolean>
-  openTerminal: (cwd?: string) => Promise<boolean>
+  openTerminal: (cwd?: string, shellType?: 'powershell' | 'cmd' | 'gitbash') => Promise<boolean>
   checkTypstStatus:  () => Promise<{ installed: boolean; version?: string; type: 'cli' | 'builtin'; error?: string }>
   savePdfDialog:     (defaultName?: string) => Promise<string | null>
   buildPdf:          (projectDir: string, outputPdfPath: string) => Promise<TypstBuildResult>
@@ -75,6 +75,8 @@ interface ElectronAPI {
   buildDocx:         (projectDir: string, outputDocxPath: string) => Promise<TypstBuildResult>
   listSkills:        (projectPath?: string) => Promise<{ name: string; title: string; description: string; isInstalled?: boolean }[]>
   installSkill:      (projectPath: string, skillName: string) => Promise<{ success: boolean; error?: string }>
+  watchFiles:        (filePaths: string[]) => Promise<boolean>
+  onFileChanged:     (callback: (data: { eventType: string; fullPath: string }) => void) => () => void
 }
 
 declare global {
