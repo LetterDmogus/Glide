@@ -86,7 +86,7 @@ const resetZoom = () => zoom.value = 1
 
       <!-- PDF Viewer -->
       <div v-else-if="mediaType === 'pdf'" class="pdf-wrapper">
-        <embed :src="fileUrl" type="application/pdf" width="100%" height="100%" />
+        <iframe :src="fileUrl" class="pdf-frame" title="PDF Preview"></iframe>
       </div>
 
       <!-- Fallback -->
@@ -200,6 +200,14 @@ const resetZoom = () => zoom.value = 1
 .pdf-wrapper {
   width: 100%;
   height: 100%;
+  display: flex;
+}
+
+.pdf-frame {
+  width: 100%;
+  height: 100%;
+  border: none;
+  background: #282c34;
 }
 
 .unknown-wrapper {

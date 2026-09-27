@@ -4,7 +4,13 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // Window controls
   minimize: () => ipcRenderer.invoke('window:minimize'),
   maximize: () => ipcRenderer.invoke('window:maximize'),
+  isMaximized: () => ipcRenderer.invoke('window:isMaximized'),
   close:    () => ipcRenderer.invoke('window:close'),
+  onMaximizedChange: (callback: (isMaximized: boolean) => void) => {
+    const handler = (_e: any, isMax: boolean) => callback(isMax)
+    ipcRenderer.on('window:maximized-change', handler)
+    return () => ipcRenderer.removeListener('window:maximized-change', handler)
+  },
 
   // File system & Project
   openFolder:  (showHidden = false) => ipcRenderer.invoke('dialog:openFolder', showHidden),
@@ -31,7 +37,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   checkTypstStatus: () => ipcRenderer.invoke('typst:checkStatus'),
   savePdfDialog: (defaultName?: string) => ipcRenderer.invoke('dialog:savePdf', defaultName),
   buildPdf:       (projectDir: string, outputPdfPath: string) => ipcRenderer.invoke('typst:build', projectDir, outputPdfPath),
-  previewPdf:     (projectDir: string) => ipcRenderer.invoke('typst:preview', projectDir),
+  previewPdf:     (projectDir: string, rendererMode?: 'cli' | 'wasm') => ipcRenderer.invoke('typst:preview', projectDir, rendererMode),
 
   // Pandoc DOCX Export
   saveDocxDialog: (defaultName?: string) => ipcRenderer.invoke('dialog:saveDocxDialog', defaultName),
@@ -40,6 +46,52 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // Skills & AI Rules Manager
   listSkills:   (projectPath?: string) => ipcRenderer.invoke('skills:list', projectPath),
   installSkill: (projectPath: string, skillName: string) => ipcRenderer.invoke('skills:install', projectPath, skillName),
+  runValidator: (projectPath: string) => ipcRenderer.invoke('validator:run', projectPath),
+  installValidatorScript: (projectPath: string) => ipcRenderer.invoke('validator:install', projectPath),
+
+  // System & External Links
+  openExternal: (url: string) => ipcRenderer.invoke('system:openExternal', url),
+  showItemInFolder: (itemPath: string) => ipcRenderer.invoke('system:showItemInFolder', itemPath),
+  getSystemMetrics: () => ipcRenderer.invoke('system:getSystemMetrics'),
+
+  // App Update Checker & Version
+  getAppVersion: () => ipcRenderer.invoke('app:getVersion'),
+  checkUpdate: () => ipcRenderer.invoke('app:checkUpdate'),
+
+  // External Preview Window API
+  openPreviewWindow: () => ipcRenderer.invoke('previewWindow:open'),
+  closePreviewWindow: () => ipcRenderer.invoke('previewWindow:close'),
+  isPreviewWindowOpen: () => ipcRenderer.invoke('previewWindow:isOpen'),
+  syncPreviewWindow: (data: { pages: string[]; loading: boolean; error?: string; projectDir?: string }) => ipcRenderer.invoke('previewWindow:sync', data),
+  getPreviewInitialData: () => ipcRenderer.invoke('previewWindow:getInitialData'),
+  onPreviewWindowClosed: (callback: () => void) => {
+    const handler = () => callback()
+    ipcRenderer.on('previewWindow:closed', handler)
+    return () => ipcRenderer.removeListener('previewWindow:closed', handler)
+  },
+  onPreviewWindowData: (callback: (data: { pages: string[]; loading: boolean; error?: string; projectDir?: string }) => void) => {
+    const handler = (_e: any, data: any) => callback(data)
+    ipcRenderer.on('previewWindow:data', handler)
+    return () => ipcRenderer.removeListener('previewWindow:data', handler)
+  },
+  onPreviewRequestRefresh: (callback: () => void) => {
+    const handler = () => callback()
+    ipcRenderer.on('previewWindow:requestRefresh', handler)
+    return () => ipcRenderer.removeListener('previewWindow:requestRefresh', handler)
+  },
+  onPreviewRequestBuildPdf: (callback: () => void) => {
+    const handler = () => callback()
+    ipcRenderer.on('previewWindow:requestBuildPdf', handler)
+    return () => ipcRenderer.removeListener('previewWindow:requestBuildPdf', handler)
+  },
+  onPreviewRequestExplainError: (callback: (errorMsg: string) => void) => {
+    const handler = (_e: any, errorMsg: string) => callback(errorMsg)
+    ipcRenderer.on('previewWindow:requestExplainError', handler)
+    return () => ipcRenderer.removeListener('previewWindow:requestExplainError', handler)
+  },
+  requestPreviewRefresh: () => ipcRenderer.invoke('previewWindow:requestRefresh'),
+  requestPreviewBuildPdf: () => ipcRenderer.invoke('previewWindow:requestBuildPdf'),
+  requestPreviewExplainError: (errorMsg: string) => ipcRenderer.invoke('previewWindow:requestExplainError', errorMsg),
 
   // File System Watcher Listener (Targeted per file di tab)
   watchFiles: (filePaths: string[]) => ipcRenderer.invoke('watcher:watchFiles', filePaths),

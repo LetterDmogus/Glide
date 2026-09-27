@@ -27,6 +27,7 @@ export interface GlideSection {
   content: string
   metadata: Record<string, any>
   isPdf?: boolean
+  chapterNum?: number
 }
 
 export interface ProjectLoadResult {
@@ -48,10 +49,43 @@ export interface TypstPreviewResult {
   error?: string
 }
 
+export interface ValidationIssue {
+  type: 'error' | 'warning' | 'info'
+  category: 'sections' | 'config' | 'bibliography' | 'images' | 'structure' | 'writing'
+  file?: string
+  line?: number
+  message: string
+  suggestion?: string
+}
+
+export interface ValidationReport {
+  timestamp: number
+  projectPath: string
+  score: number
+  passed: boolean
+  errorCount: number
+  warningCount: number
+  infoCount: number
+  issues: ValidationIssue[]
+}
+
+export interface ExtensionItem {
+  name: string
+  title: string
+  description: string
+  isInstalled?: boolean
+  type?: 'skill' | 'plugin'
+  canRun?: boolean
+  author?: string
+  version?: string
+}
+
 interface ElectronAPI {
   minimize: () => Promise<void>
   maximize: () => Promise<void>
+  isMaximized: () => Promise<boolean>
   close:    () => Promise<void>
+  onMaximizedChange?: (callback: (isMaximized: boolean) => void) => () => void
   openFolder:  (showHidden?: boolean) => Promise<ProjectLoadResult | null>
   loadProject: (path: string, showHidden?: boolean) => Promise<ProjectLoadResult>
   readFile:    (path: string) => Promise<string | null>
@@ -70,13 +104,35 @@ interface ElectronAPI {
   checkTypstStatus:  () => Promise<{ installed: boolean; version?: string; type: 'cli' | 'builtin'; error?: string }>
   savePdfDialog:     (defaultName?: string) => Promise<string | null>
   buildPdf:          (projectDir: string, outputPdfPath: string) => Promise<TypstBuildResult>
-  previewPdf:        (projectDir: string) => Promise<TypstPreviewResult>
+  previewPdf:        (projectDir: string, rendererMode?: 'cli' | 'wasm') => Promise<TypstPreviewResult>
   saveDocxDialog:    (defaultName?: string) => Promise<string | null>
   buildDocx:         (projectDir: string, outputDocxPath: string) => Promise<TypstBuildResult>
-  listSkills:        (projectPath?: string) => Promise<{ name: string; title: string; description: string; isInstalled?: boolean }[]>
+  listSkills:        (projectPath?: string) => Promise<ExtensionItem[]>
   installSkill:      (projectPath: string, skillName: string) => Promise<{ success: boolean; error?: string }>
+  runValidator?:     (projectPath: string) => Promise<ValidationReport>
+  installValidatorScript?: (projectPath: string) => Promise<{ success: boolean; error?: string }>
+  getAppVersion:     () => Promise<string>
+  checkUpdate:       () => Promise<{ success: boolean; currentVersion?: string; latestVersion?: string; isUpdateAvailable?: boolean; releaseName?: string; releaseNotes?: string; releaseUrl?: string; error?: string; message?: string }>
+  openExternal:      (url: string) => Promise<boolean>
+  showItemInFolder?: (itemPath: string) => Promise<boolean>
+  getSystemMetrics?: () => Promise<{ success: boolean; totalCpu: number; totalMemoryMB: number; processes: Array<{ pid: number; type: string; cpuPercent: number; memoryMB: number }>; error?: string }>
   watchFiles:        (filePaths: string[]) => Promise<boolean>
   onFileChanged:     (callback: (data: { eventType: string; fullPath: string }) => void) => () => void
+
+  // External Preview Window API
+  openPreviewWindow?: () => Promise<boolean>
+  closePreviewWindow?: () => Promise<boolean>
+  isPreviewWindowOpen?: () => Promise<boolean>
+  syncPreviewWindow?: (data: { pages: string[]; loading: boolean; error?: string; projectDir?: string }) => Promise<boolean>
+  getPreviewInitialData?: () => Promise<{ pages: string[]; loading: boolean; error?: string; projectDir?: string } | null>
+  onPreviewWindowClosed?: (callback: () => void) => () => void
+  onPreviewWindowData?: (callback: (data: { pages: string[]; loading: boolean; error?: string; projectDir?: string }) => void) => () => void
+  onPreviewRequestRefresh?: (callback: () => void) => () => void
+  onPreviewRequestBuildPdf?: (callback: () => void) => () => void
+  onPreviewRequestExplainError?: (callback: (errorMsg: string) => void) => () => void
+  requestPreviewRefresh?: () => Promise<boolean>
+  requestPreviewBuildPdf?: () => Promise<boolean>
+  requestPreviewExplainError?: (errorMsg: string) => Promise<boolean>
 }
 
 declare global {

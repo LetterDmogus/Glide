@@ -1,0 +1,65 @@
+/* ─── Google Material Symbols File Icons System (100% Offline Local Font) ─── */
+@font-face {
+  font-family: 'Material Symbols Outlined';
+  font-style: normal;
+  font-weight: 400;
+  src: url('/fonts/MaterialSymbolsOutlined.ttf') format('truetype');
+  font-display: block;
+}
+
+.g-material-icon {
+  font-family: 'Material Symbols Outlined', sans-serif;
+  font-weight: normal;
+  font-style: normal;
+  font-size: 16px;
+  line-height: 1;
+  letter-spacing: normal;
+  text-transform: none;
+  display: inline-block;
+  white-space: nowrap;
+  word-wrap: normal;
+  direction: ltr;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+  -moz-osx-font-smoothing: grayscale;
+  font-feature-settings: 'liga';
+  flex-shrink: 0;
+  user-select: none;
+}
+
+/* Material Icon Extension Color Schemes */
+.mat-icon-typst {
+  color: #38bdf8; /* Cyan Sky */
+}
+
+.mat-icon-markdown {
+  color: #a78bfa; /* Soft Purple */
+}
+
+.mat-icon-json {
+  color: #fbbf24; /* Warm Yellow */
+}
+
+.mat-icon-pdf {
+  color: #f87171; /* Red */
+}
+
+.mat-icon-bib {
+  color: #f472b6; /* Pink */
+}
+
+.mat-icon-image {
+  color: #4ade80; /* Green */
+}
+
+.mat-icon-code {
+  color: #818cf8; /* Indigo */
+}
+
+.mat-icon-config {
+  color: #94a3b8; /* Slate Neutral */
+}
+
+.mat-icon-default {
+  color: #8b8fa8;
+}

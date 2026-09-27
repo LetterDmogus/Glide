@@ -51,6 +51,11 @@ export function normalizeV1Paths(content: string, projectDir: string): string {
   const pattern2 = new RegExp('/[^/"\']+/' + projectName + '/', 'g')
   content = content.replace(pattern2, '/')
 
+  // Pattern 3: Normalize relative ../bibliography.yaml to root /bibliography.yaml
+  // Prevents "would escape the project root" sandbox error in Typst
+  content = content.replace(/#bibliography\(\s*["']\.\.\/([^"']+)["']/g, '#bibliography("/$1"')
+  content = content.replace(/bibliography\(\s*["']\.\.\/([^"']+)["']/g, 'bibliography("/$1"')
+
   return content
 }
 
@@ -250,7 +255,8 @@ export async function compileTypstToPdf(
 // Same as PDF compile, but outputs per-page SVGs at .gld_temp/preview-{n}.svg
 export async function compileTypstToSvgPages(
   projectDir: string,
-  appRoot: string
+  appRoot: string,
+  rendererMode: 'cli' | 'wasm' = 'cli'
 ): Promise<{ success: boolean; pages?: string[]; error?: string }> {
   try {
     const tempDir = path.join(projectDir, '.gld_temp')
@@ -259,13 +265,24 @@ export async function compileTypstToSvgPages(
     // Copy template.typ into project's .gld_temp/themes/
     await ensureTemplateInProject(projectDir, appRoot)
 
+    const payload = await generateTypstPayload(projectDir)
+    const typstBin = await getTypstBinaryPath(appRoot)
+
+    // ── SVG Page Pattern Compilation ──
+    // Typst mewajibkan pola {n} untuk mengekspor multi-page SVG (stdout '-' ditolak oleh Typst jika > 1 halaman)
     const typPath = path.join(tempDir, 'preview.typ')
     const svgPattern = path.join(tempDir, 'preview-{n}.svg')
 
-    const payload = await generateTypstPayload(projectDir)
-    await fs.writeFile(typPath, payload, 'utf-8')
+    // Bersihkan berkas SVG lama di .gld_temp untuk mencegah bug halaman ganda
+    try {
+      const existingFiles = await fs.readdir(tempDir)
+      const oldSvgFiles = existingFiles.filter(f => f.startsWith('preview-') && f.endsWith('.svg'))
+      await Promise.all(oldSvgFiles.map(f => fs.unlink(path.join(tempDir, f)).catch(() => {})))
+    } catch {
+      // Ignore clean error
+    }
 
-    const typstBin = await getTypstBinaryPath(appRoot)
+    await fs.writeFile(typPath, payload, 'utf-8')
 
     return new Promise((resolve) => {
       const proc = spawn(typstBin, ['compile', '--root', projectDir, typPath, svgPattern], {
@@ -280,16 +297,29 @@ export async function compileTypstToSvgPages(
         if (code === 0) {
           try {
             const files = await fs.readdir(tempDir)
-            const svgFiles = files
+            const sortedSvgFiles = files
               .filter(f => f.startsWith('preview-') && f.endsWith('.svg'))
               .sort((a, b) => {
                 const numA = parseInt(a.replace('preview-', '').replace('.svg', '')) || 0
                 const numB = parseInt(b.replace('preview-', '').replace('.svg', '')) || 0
                 return numA - numB
               })
-              .map(f => path.join(tempDir, f))
 
-            resolve({ success: true, pages: svgFiles })
+            // Jika mode WASM / In-Memory: baca seluruh SVG ke RAM lalu hapus berkas fisiknya dari disk
+            if (rendererMode === 'wasm') {
+              const svgContents = await Promise.all(
+                sortedSvgFiles.map(async (f) => {
+                  const fullP = path.join(tempDir, f)
+                  const content = await fs.readFile(fullP, 'utf-8')
+                  await fs.unlink(fullP).catch(() => {})
+                  return content
+                })
+              )
+              resolve({ success: true, pages: svgContents })
+            } else {
+              // Mode CLI: kembalikan daftar path file
+              resolve({ success: true, pages: sortedSvgFiles.map(f => path.join(tempDir, f)) })
+            }
           } catch (e: any) {
             resolve({ success: false, error: e.message })
           }

@@ -1,7 +1,8 @@
 <script setup lang="ts">
-import { ref, computed, watch, onBeforeUnmount, nextTick } from 'vue'
+import { ref, watch, onMounted, onBeforeUnmount, nextTick } from 'vue'
 import { 
-  RefreshCw, AlertCircle, Eye, Download, Bug, Filter, Layers 
+  RefreshCw, AlertCircle, Eye, Download, Bug, Layers,
+  ZoomIn, ZoomOut, Moon, Sun, ExternalLink
 } from 'lucide-vue-next'
 import { aiSettings } from '../utils/settings'
 
@@ -10,16 +11,91 @@ const props = defineProps<{
   loading: boolean
   error?: string
   projectDir?: string
+  isExternal?: boolean
 }>()
 
 const emit = defineEmits<{
   'refresh': []
   'build-pdf': []
   'explain-error': [errorMsg: string]
+  'popout': []
 }>()
 
-// Active Section Filter
-const selectedFilter = ref<string>('all')
+// ── Persisted State Management (Zoom, Dark Paper, Last Active Page) ──
+const STORAGE_KEY_ZOOM = 'glide_preview_zoom'
+const STORAGE_KEY_DARK_PAPER = 'glide_preview_dark_paper'
+const STORAGE_KEY_LAST_PAGE = 'glide_preview_last_page'
+
+const savedZoom = parseFloat(localStorage.getItem(STORAGE_KEY_ZOOM) || '1.0')
+const zoomLevel = ref<number>(isNaN(savedZoom) ? 1.0 : Math.min(2.5, Math.max(0.5, savedZoom)))
+
+const containerWidth = ref<number>(800)
+const calculatedColumns = ref<number>(1)
+
+const savedDarkPaper = localStorage.getItem(STORAGE_KEY_DARK_PAPER) === 'true'
+const isDarkPaper = ref<boolean>(savedDarkPaper)
+
+const savedLastPage = parseInt(localStorage.getItem(STORAGE_KEY_LAST_PAGE) || '0', 10)
+const lastActivePageIndex = ref<number>(isNaN(savedLastPage) ? 0 : savedLastPage)
+
+watch(zoomLevel, (val) => {
+  localStorage.setItem(STORAGE_KEY_ZOOM, val.toString())
+  updateAutoColumns()
+})
+
+watch(isDarkPaper, (val) => {
+  localStorage.setItem(STORAGE_KEY_DARK_PAPER, val ? 'true' : 'false')
+})
+
+watch(lastActivePageIndex, (val) => {
+  localStorage.setItem(STORAGE_KEY_LAST_PAGE, val.toString())
+})
+
+function toggleDarkPaper() {
+  isDarkPaper.value = !isDarkPaper.value
+}
+
+// Menghitung kolom otomatis ala Word: Berdasarkan lebar container efektif & zoom
+function updateAutoColumns() {
+  // Titik tengah yang seimbang (Sweet Spot):
+  // Di layar Full HD 1080p (lebar ~1920px), jika base ~430px:
+  // - Pada zoom 100% (1.0x): 2 halaman butuh ~880px -> di jendela fullscreen akan nyaman menjadi 2 halaman jika dikehendaki, 
+  //   atau 1 halaman saat zoom 100%-110% tanpa harus zoom terlalu besar (150%+).
+  // - Menyesuaikan ambang acuan ke 430px agar peralihan ke 1 halaman terasa natural pada zoom normal baca (100%-110%).
+  const scaledPageWidth = 430 * zoomLevel.value
+  const availableWidth = containerWidth.value - 40
+  
+  if (availableWidth >= scaledPageWidth * 3 + 48) {
+    calculatedColumns.value = 3
+  } else if (availableWidth >= scaledPageWidth * 2 + 24) {
+    calculatedColumns.value = 2
+  } else {
+    calculatedColumns.value = 1
+  }
+}
+
+function zoomIn() {
+  zoomLevel.value = Math.min(2.5, +(zoomLevel.value + 0.05).toFixed(2))
+}
+
+function zoomOut() {
+  zoomLevel.value = Math.max(0.25, +(zoomLevel.value - 0.05).toFixed(2))
+}
+
+function resetZoom() {
+  zoomLevel.value = 1.0
+}
+
+function handleWheel(e: WheelEvent) {
+  if (e.ctrlKey || e.metaKey) {
+    e.preventDefault()
+    if (e.deltaY < 0) {
+      zoomIn()
+    } else if (e.deltaY > 0) {
+      zoomOut()
+    }
+  }
+}
 
 // Cache Blob URLs hanya untuk halaman yang aktif/terlihat
 const blobUrls = ref<Record<number, string>>({})
@@ -42,6 +118,11 @@ function setupObserver() {
         if (entry.isIntersecting) {
           visiblePages.value.add(pageIdx)
           loadPageBlob(pageIdx)
+          // Simpan halaman paling awal yang sedang aktif terlihat
+          const minVisible = Math.min(...Array.from(visiblePages.value))
+          if (!isNaN(minVisible) && minVisible >= 0) {
+            lastActivePageIndex.value = minVisible
+          }
         } else {
           // Unload SVG dari memori GPU jika halaman terlalu jauh dari viewport
           visiblePages.value.delete(pageIdx)
@@ -67,23 +148,33 @@ function setupObserver() {
 async function loadPageBlob(pageIdx: number) {
   if (blobUrls.value[pageIdx]) return // Sudah ada di memori
 
-  const pagePath = props.pages[pageIdx]
-  if (!pagePath) return
+  const pagePathOrContent = props.pages[pageIdx]
+  if (!pagePathOrContent) return
 
-  try {
-    const content = await window.electronAPI?.readFile?.(pagePath)
-    if (content) {
-      const blob = new Blob([content], { type: 'image/svg+xml' })
-      blobUrls.value[pageIdx] = URL.createObjectURL(blob)
+  // Jika berupa raw SVG (dari In-Memory WASM compiler)
+  if (pagePathOrContent.trim().startsWith('<svg') || pagePathOrContent.startsWith('data:image/svg+xml')) {
+    if (pagePathOrContent.startsWith('data:image/svg+xml')) {
+      blobUrls.value[pageIdx] = pagePathOrContent
     } else {
-      let clean = pagePath.replace(/\\/g, '/')
-      if (!clean.startsWith('/')) clean = '/' + clean
-      blobUrls.value[pageIdx] = `file://${clean}?t=${Date.now()}`
+      const blob = new Blob([pagePathOrContent], { type: 'image/svg+xml' })
+      blobUrls.value[pageIdx] = URL.createObjectURL(blob)
     }
-  } catch {
-    let clean = pagePath.replace(/\\/g, '/')
-    if (!clean.startsWith('/')) clean = '/' + clean
-    blobUrls.value[pageIdx] = `file://${clean}?t=${Date.now()}`
+    return
+  }
+
+  // Jika berupa path file di disk (Native CLI mode)
+  for (let attempt = 0; attempt < 5; attempt++) {
+    try {
+      const content = await window.electronAPI?.readFile?.(pagePathOrContent)
+      if (content) {
+        const blob = new Blob([content], { type: 'image/svg+xml' })
+        blobUrls.value[pageIdx] = URL.createObjectURL(blob)
+        return
+      }
+    } catch {
+      // Menunggu file selesai ditulis
+    }
+    await new Promise(resolve => setTimeout(resolve, 100))
   }
 }
 
@@ -104,39 +195,55 @@ function clearAllBlobs() {
   visiblePages.value.clear()
 }
 
-// Section Filtering Logic
-const filteredPageIndices = computed<number[]>(() => {
-  if (selectedFilter.value === 'all' || !props.pages.length) {
-    return props.pages.map((_, i) => i)
-  }
-
-  // Jika filter per bagian (contoh: cover vs content)
-  if (selectedFilter.value === 'cover') {
-    return [0] // Halaman 1
-  }
-
-  const numPages = props.pages.length
-  if (selectedFilter.value === 'main') {
-    return Array.from({ length: numPages - 1 }, (_, i) => i + 1)
-  }
-
-  return props.pages.map((_, i) => i)
-})
-
-function scrollToPage(pageIdx: number) {
+async function scrollToPage(pageIdx: number) {
+  lastActivePageIndex.value = pageIdx
+  // Preload blob halaman target secara langsung sebelum melompat
+  await loadPageBlob(pageIdx)
+  visiblePages.value.add(pageIdx)
+  
   const targetEl = pageRefs.value[pageIdx]
   if (targetEl) {
-    targetEl.scrollIntoView({ behavior: 'smooth', block: 'start' })
+    targetEl.scrollIntoView({ behavior: 'auto', block: 'start' })
   }
 }
 
-watch(() => props.pages, () => {
+let hasRestoredScroll = false
+
+watch(() => props.pages, (newPages) => {
+  // Hanya reload jika proses compile sudah selesai atau jumlah halaman berubah
   clearAllBlobs()
-  nextTick(() => setupObserver())
+  nextTick(() => {
+    setupObserver()
+    if (!hasRestoredScroll && newPages.length > 0 && lastActivePageIndex.value > 0) {
+      const targetIdx = Math.min(lastActivePageIndex.value, newPages.length - 1)
+      scrollToPage(targetIdx)
+      hasRestoredScroll = true
+    }
+  })
 }, { immediate: true })
+
+let resizeObserver: ResizeObserver | null = null
+
+onMounted(() => {
+  if (scrollContainer.value) {
+    containerWidth.value = scrollContainer.value.clientWidth
+    updateAutoColumns()
+
+    resizeObserver = new ResizeObserver((entries) => {
+      for (const entry of entries) {
+        if (entry.contentRect.width > 0) {
+          containerWidth.value = entry.contentRect.width
+          updateAutoColumns()
+        }
+      }
+    })
+    resizeObserver.observe(scrollContainer.value)
+  }
+})
 
 onBeforeUnmount(() => {
   if (observer) observer.disconnect()
+  if (resizeObserver) resizeObserver.disconnect()
   clearAllBlobs()
 })
 </script>
@@ -147,20 +254,33 @@ onBeforeUnmount(() => {
     <div class="preview-header">
       <div class="header-left">
         <span class="preview-title">Preview</span>
-        <span v-if="pages.length > 0" class="page-count">{{ pages.length }} Halaman</span>
-        
-        <!-- Filter Section Dropdown -->
-        <div v-if="pages.length > 1" class="filter-wrapper">
-          <Filter :size="11" class="icon-muted" />
-          <select v-model="selectedFilter" class="filter-select">
-            <option value="all">Semua Halaman ({{ pages.length }})</option>
-            <option value="cover">Cover / Sampul (Hal 1)</option>
-            <option value="main">Isi Dokumen (Hal 2-{{ pages.length }})</option>
-          </select>
-        </div>
+        <span v-if="pages.length > 0" class="page-count">{{ pages.length }} {{ pages.length === 1 ? 'Page' : 'Pages' }}</span>
       </div>
 
       <div class="header-actions">
+        <!-- Layout, Theme & Zoom Controls -->
+        <div v-if="pages.length > 0 && !error" class="zoom-controls">
+          <button 
+            class="zoom-btn" 
+            :class="{ 'active-toggle': isDarkPaper }" 
+            @click="toggleDarkPaper" 
+            :title="isDarkPaper ? 'Dark Paper Mode (Active) - Click to restore White Paper' : 'Switch to Dark Paper Mode (Eye Comfort)'"
+          >
+            <Sun v-if="isDarkPaper" :size="12" />
+            <Moon v-else :size="12" />
+          </button>
+          <div class="control-divider"></div>
+          <button class="zoom-btn" @click="zoomOut" title="Zoom Out (Ctrl + Scroll Down)">
+            <ZoomOut :size="12" />
+          </button>
+          <button class="zoom-reset" @click="resetZoom" title="Reset Zoom to 100%">
+            {{ Math.round(zoomLevel * 100) }}%
+          </button>
+          <button class="zoom-btn" @click="zoomIn" title="Zoom In (Ctrl + Scroll Up)">
+            <ZoomIn :size="12" />
+          </button>
+        </div>
+
         <button class="preview-btn" @click="emit('refresh')" :disabled="loading" title="Refresh Preview">
           <RefreshCw :size="12" :class="{ 'spin': loading }" />
           <span class="btn-text">Refresh</span>
@@ -169,75 +289,98 @@ onBeforeUnmount(() => {
           <Download :size="12" />
           <span class="btn-text">Build PDF</span>
         </button>
+
+        <!-- Pop-Out to External Window Button (Only in Docked mode) -->
+        <button 
+          v-if="!isExternal" 
+          class="preview-btn icon-only" 
+          @click="emit('popout')" 
+          title="Open Preview in External Window (Dual Monitor Support)"
+        >
+          <ExternalLink :size="12" />
+        </button>
       </div>
     </div>
 
     <!-- Main Workspace Area -->
     <div class="preview-wrapper-main">
       <!-- Preview Content Area -->
-      <div ref="scrollContainer" class="preview-body custom-scroll">
+      <div ref="scrollContainer" class="preview-body custom-scroll" @wheel="handleWheel">
         <!-- Loading State -->
         <div v-if="loading && pages.length === 0" class="state-container">
           <RefreshCw :size="32" class="spin icon-muted" />
-          <p>Menderender pratinjau Typst...</p>
+          <p>Rendering Typst preview...</p>
         </div>
 
         <!-- Error State -->
         <div v-else-if="error" class="state-container error-state">
           <AlertCircle :size="36" class="icon-error" />
-          <h3>Gagal Menampilkan Pratinjau</h3>
+          <h3>Preview Rendering Failed</h3>
           <pre class="error-log">{{ error }}</pre>
           <button v-if="aiSettings.enabled" class="explain-btn" @click="emit('explain-error', error)">
             <Bug :size="13" />
-            <span>Explain Error dengan AI</span>
+            <span>Explain Error with AI</span>
           </button>
         </div>
 
-        <!-- Virtualized Pages View -->
-        <div v-else-if="filteredPageIndices.length > 0" class="pages-container">
+        <!-- Virtualized Pages View with Scalable Style & Autonomous Multi-Column Layout -->
+        <div 
+          v-else-if="pages.length > 0" 
+          class="pages-container"
+          :class="{ 
+            'multi-column-grid': calculatedColumns > 1,
+            'dark-paper-mode': isDarkPaper 
+          }"
+          :style="{ 
+            gridTemplateColumns: calculatedColumns > 1 ? `repeat(${calculatedColumns}, minmax(0, 1fr))` : '1fr',
+            maxWidth: calculatedColumns === 3 ? '1950px' : (calculatedColumns === 2 ? '1400px' : '820px'),
+            transform: `scale(${zoomLevel})`, 
+            transformOrigin: 'top center' 
+          }"
+        >
           <div 
-            v-for="pageIdx in filteredPageIndices" 
+            v-for="(_, pageIdx) in pages" 
             :key="pageIdx"
             :ref="el => { pageRefs[pageIdx] = el as HTMLDivElement }"
             :data-page-index="pageIdx"
             class="page-card"
           >
             <div class="page-shadow">
-              <!-- Render hanya ketika halaman masuk ke viewport -->
+              <!-- Render only when page enters viewport -->
               <img 
                 v-if="blobUrls[pageIdx]" 
                 :src="blobUrls[pageIdx]" 
-                :alt="`Halaman ${pageIdx + 1}`" 
+                :alt="`Page ${pageIdx + 1}`" 
                 loading="lazy" 
               />
               <div v-else class="page-skeleton">
                 <RefreshCw :size="18" class="spin icon-muted" />
-                <span>Memuat Halaman {{ pageIdx + 1 }}...</span>
+                <span>Loading Page {{ pageIdx + 1 }}...</span>
               </div>
             </div>
-            <span class="page-number">Halaman {{ pageIdx + 1 }} dari {{ pages.length }}</span>
+            <span class="page-number">Page {{ pageIdx + 1 }} of {{ pages.length }}</span>
           </div>
         </div>
 
         <!-- Empty State -->
         <div v-else class="state-container">
           <Eye :size="36" class="icon-muted" />
-          <p>Belum ada pratinjau. Klik "Refresh" atau buka proyek Glide.</p>
+          <p>No preview available. Click "Refresh" or open a Glide project.</p>
         </div>
       </div>
 
       <!-- Jump-to-Page Quick Scroller Sidebar -->
       <div v-if="pages.length > 1 && !error" class="page-scroller-bar custom-scroll">
-        <div class="scroller-title" title="Lompat ke Halaman">
+        <div class="scroller-title" title="Jump to Page">
           <Layers :size="11" />
         </div>
         <button 
-          v-for="pageIdx in filteredPageIndices" 
+          v-for="(_, pageIdx) in pages" 
           :key="pageIdx"
           class="scroller-item"
           :class="{ active: visiblePages.has(pageIdx) }"
           @click="scrollToPage(pageIdx)"
-          :title="`Lompat ke Halaman ${pageIdx + 1}`"
+          :title="`Jump to Page ${pageIdx + 1}`"
         >
           {{ pageIdx + 1 }}
         </button>
@@ -332,6 +475,64 @@ onBeforeUnmount(() => {
   flex-shrink: 0;
 }
 
+.zoom-controls {
+  display: flex;
+  align-items: center;
+  background: var(--bg-base);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 1px 3px;
+  gap: 2px;
+}
+
+.control-divider {
+  width: 1px;
+  height: 12px;
+  background-color: var(--border);
+  margin: 0 2px;
+}
+
+.zoom-btn {
+  background: transparent;
+  border: none;
+  color: var(--text-secondary);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  border-radius: 3px;
+  cursor: pointer;
+  padding: 0;
+  transition: all 0.15s;
+}
+
+.zoom-btn:hover {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+
+.zoom-btn.active-toggle {
+  background: var(--accent);
+  color: #ffffff;
+}
+
+.zoom-reset {
+  background: transparent;
+  border: none;
+  color: var(--text-secondary);
+  font-size: 10px;
+  font-weight: 600;
+  font-family: inherit;
+  cursor: pointer;
+  padding: 0 3px;
+  line-height: 1;
+}
+
+.zoom-reset:hover {
+  color: var(--accent);
+}
+
 .preview-btn {
   display: flex;
   align-items: center;
@@ -351,6 +552,10 @@ onBeforeUnmount(() => {
 .preview-btn:hover:not(:disabled) {
   background: var(--bg-hover);
   color: var(--text-primary);
+}
+
+.preview-btn.icon-only {
+  padding: 4px 6px;
 }
 
 .preview-btn.primary {
@@ -402,6 +607,14 @@ onBeforeUnmount(() => {
   gap: 24px;
   width: 100%;
   max-width: 820px;
+  transition: max-width 0.2s ease;
+}
+
+/* Autonomous Responsive Multi-Column Layout */
+.pages-container.multi-column-grid {
+  display: grid;
+  gap: 20px 24px;
+  align-items: start;
 }
 
 .page-card {
@@ -420,6 +633,7 @@ onBeforeUnmount(() => {
   width: 100%;
   aspect-ratio: 1 / 1.4142; /* Standard A4 Ratio */
   position: relative;
+  transition: background-color 0.25s ease, box-shadow 0.25s ease;
 }
 
 .page-shadow img {
@@ -427,6 +641,18 @@ onBeforeUnmount(() => {
   height: 100%;
   object-fit: contain;
   display: block;
+  transition: filter 0.25s ease;
+}
+
+/* ── Dark Paper Mode (Eye Comfort Filter) ── */
+.pages-container.dark-paper-mode .page-shadow {
+  background: #181a20;
+  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.65), 0 0 0 1px rgba(255, 255, 255, 0.08);
+}
+
+.pages-container.dark-paper-mode .page-shadow img {
+  /* Membalik kertas putih ke gelap dan teks hitam ke terang secara seimbang tanpa merusak spektrum warna */
+  filter: invert(0.88) hue-rotate(180deg) brightness(0.95) contrast(0.9);
 }
 
 .page-skeleton {

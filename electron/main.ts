@@ -1,14 +1,16 @@
-import { app, BrowserWindow, ipcMain, dialog } from 'electron'
+import { app, BrowserWindow, ipcMain, dialog, shell } from 'electron'
 import { fileURLToPath } from 'node:url'
 import path from 'node:path'
 import fs from 'node:fs/promises'
 import * as yaml from 'js-yaml'
 import pty from '@lydell/node-pty'
 import os from 'node:os'
+import https from 'node:https'
 import { isGlideProject, loadGlideConfig, getGlideSections, ensureThemeInProject } from './project.ts'
 import { compileTypstToPdf, compileTypstToSvgPages } from './typst.ts'
 import { compileGlideToDocx } from './docx.ts'
 import { listAvailableSkills, installSkillToProject } from './skills.ts'
+import { validateProjectStructure } from './validator.ts'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 
@@ -85,6 +87,7 @@ function createWindow() {
       contextIsolation: true,
       nodeIntegration: false,
       webSecurity: false,
+      plugins: true,
     },
   })
 
@@ -111,15 +114,153 @@ function createWindow() {
       event.preventDefault()
     }
   })
+
+  // Window Maximize / Unmaximize State Listeners
+  win.on('maximize', () => {
+    win?.webContents.send('window:maximized-change', true)
+  })
+
+  win.on('unmaximize', () => {
+    win?.webContents.send('window:maximized-change', false)
+  })
+
+  win.on('closed', () => {
+    win = null
+    if (previewWin) {
+      previewWin.close()
+      previewWin = null
+    }
+  })
 }
 
-// ── Window controls IPC ─────────────────────────────────────────
-ipcMain.handle('window:minimize', () => win?.minimize())
-ipcMain.handle('window:maximize', () => {
-  if (win?.isMaximized()) win.unmaximize()
-  else win?.maximize()
+// ── External Preview Window State & Handlers ─────────────────────
+let previewWin: BrowserWindow | null = null
+let cachedPreviewData: { pages: string[]; loading: boolean; error?: string; projectDir?: string } | null = null
+
+function createPreviewWindow() {
+  if (previewWin) {
+    if (previewWin.isMinimized()) previewWin.restore()
+    previewWin.focus()
+    return
+  }
+
+  previewWin = new BrowserWindow({
+    width: 900,
+    height: 850,
+    minWidth: 480,
+    minHeight: 500,
+    frame: false,
+    show: true,
+    backgroundColor: '#0f1117',
+    icon: path.join(process.env.APP_ROOT, 'icon.png'),
+    webPreferences: {
+      preload: path.join(__dirname, 'preload.mjs'),
+      contextIsolation: true,
+      nodeIntegration: false,
+      webSecurity: false,
+      plugins: true,
+    },
+  })
+
+  // Gunakan hash navigation (#preview) agar aman baik di dev server maupun file:// production
+  if (VITE_DEV_SERVER_URL) {
+    previewWin.loadURL(`${VITE_DEV_SERVER_URL}#preview`)
+  } else {
+    previewWin.loadFile(path.join(RENDERER_DIST, 'index.html'), { hash: 'preview' })
+  }
+
+  previewWin.webContents.on('did-fail-load', (_e, errorCode, errorDescription) => {
+    console.error('External preview window failed to load:', errorCode, errorDescription)
+  })
+
+  previewWin.webContents.on('did-finish-load', () => {
+    previewWin?.webContents.setZoomFactor(1.0)
+    previewWin?.webContents.setZoomLevel(0)
+    previewWin?.webContents.setVisualZoomLevelLimits(1, 1)
+
+    // Kirim data cache saat window selesai loading DOM
+    if (cachedPreviewData) {
+      previewWin?.webContents.send('previewWindow:data', cachedPreviewData)
+    }
+  })
+
+  previewWin.on('maximize', () => {
+    previewWin?.webContents.send('window:maximized-change', true)
+  })
+
+  previewWin.on('unmaximize', () => {
+    previewWin?.webContents.send('window:maximized-change', false)
+  })
+
+  previewWin.on('closed', () => {
+    previewWin = null
+    win?.webContents.send('previewWindow:closed')
+  })
+}
+
+ipcMain.handle('previewWindow:open', () => {
+  createPreviewWindow()
+  return true
 })
-ipcMain.handle('window:close', () => win?.close())
+
+ipcMain.handle('previewWindow:close', () => {
+  if (previewWin) {
+    previewWin.close()
+    previewWin = null
+  }
+  return true
+})
+
+ipcMain.handle('previewWindow:isOpen', () => {
+  return previewWin !== null && !previewWin.isDestroyed()
+})
+
+ipcMain.handle('previewWindow:sync', (_e, data: { pages: string[]; loading: boolean; error?: string; projectDir?: string }) => {
+  cachedPreviewData = data
+  if (previewWin && !previewWin.isDestroyed()) {
+    previewWin.webContents.send('previewWindow:data', data)
+  }
+  return true
+})
+
+ipcMain.handle('previewWindow:getInitialData', () => {
+  return cachedPreviewData
+})
+
+// Forward relay events dari preview window ke main window
+ipcMain.handle('previewWindow:requestRefresh', () => {
+  win?.webContents.send('previewWindow:requestRefresh')
+  return true
+})
+
+ipcMain.handle('previewWindow:requestBuildPdf', () => {
+  win?.webContents.send('previewWindow:requestBuildPdf')
+  return true
+})
+
+ipcMain.handle('previewWindow:requestExplainError', (_e, errorMsg: string) => {
+  win?.webContents.send('previewWindow:requestExplainError', errorMsg)
+  return true
+})
+
+// ── Window controls IPC (mendukung main window maupun preview window) ──
+ipcMain.handle('window:minimize', (e) => {
+  const targetWin = BrowserWindow.fromWebContents(e.sender) || win
+  targetWin?.minimize()
+})
+ipcMain.handle('window:maximize', (e) => {
+  const targetWin = BrowserWindow.fromWebContents(e.sender) || win
+  if (targetWin?.isMaximized()) targetWin.unmaximize()
+  else targetWin?.maximize()
+})
+ipcMain.handle('window:isMaximized', (e) => {
+  const targetWin = BrowserWindow.fromWebContents(e.sender) || win
+  return targetWin?.isMaximized() || false
+})
+ipcMain.handle('window:close', (e) => {
+  const targetWin = BrowserWindow.fromWebContents(e.sender) || win
+  targetWin?.close()
+})
 
 // ── Terminal Multi-Session PTY IPC ─────────────────────────────────
 ipcMain.handle('terminal:open', (_e, id: string, cwd?: string) => {
@@ -277,8 +418,17 @@ ipcMain.handle('skills:install', async (_e, projectPath: string, skillName: stri
   return await installSkillToProject(getAppResourcePath(), projectPath, skillName)
 })
 
-ipcMain.handle('typst:preview', async (_e, projectDir: string) => {
-  return await compileTypstToSvgPages(folderPathOrRoot(projectDir), getAppResourcePath())
+ipcMain.handle('validator:run', async (_e, projectDir: string) => {
+  return await validateProjectStructure(folderPathOrRoot(projectDir))
+})
+
+ipcMain.handle('validator:install', async (_e, projectDir: string) => {
+  const { installValidatorPluginFiles } = await import('./validator.ts')
+  return await installValidatorPluginFiles(folderPathOrRoot(projectDir))
+})
+
+ipcMain.handle('typst:preview', async (_e, projectDir: string, rendererMode: 'cli' | 'wasm' = 'cli') => {
+  return await compileTypstToSvgPages(folderPathOrRoot(projectDir), getAppResourcePath(), rendererMode)
 })
 
 function folderPathOrRoot(dirPath: string): string {
@@ -431,7 +581,24 @@ ipcMain.handle('fs:renameItem', async (_e, oldPath: string, newPath: string) => 
   try {
     await fs.rename(oldPath, newPath)
     return true
-  } catch {
+  } catch (err: any) {
+    // EXDEV = cross-device rename tidak bisa, fallback ke copy + delete
+    if (err.code === 'EXDEV') {
+      try {
+        const stat = await fs.stat(oldPath)
+        if (stat.isDirectory()) {
+          await fs.cp(oldPath, newPath, { recursive: true })
+        } else {
+          await fs.copyFile(oldPath, newPath)
+        }
+        await fs.rm(oldPath, { recursive: true, force: true })
+        return true
+      } catch (fallbackErr) {
+        console.error('[renameItem EXDEV fallback]', fallbackErr)
+        return false
+      }
+    }
+    console.error('[renameItem]', err)
     return false
   }
 })
@@ -479,6 +646,148 @@ ipcMain.handle('fs:listImages', async (_e, dirPath: string) => {
     return []
   }
 })
+
+// ── App Update Check (GitHub Releases) ──────────────────────────
+ipcMain.handle('app:checkUpdate', async () => {
+  return new Promise((resolve) => {
+    const currentVersion = app.getVersion()
+    const options = {
+      hostname: 'api.github.com',
+      path: '/repos/LetterDmogus/Glide/releases/latest',
+      headers: {
+        'User-Agent': 'Glide-Desktop-App',
+        'Accept': 'application/vnd.github.v3+json'
+      }
+    }
+
+    const req = https.get(options, (res) => {
+      let rawData = ''
+      res.on('data', (chunk) => { rawData += chunk })
+      res.on('end', () => {
+        try {
+          if (res.statusCode === 200) {
+            const data = JSON.parse(rawData)
+            const latestTag = (data.tag_name || '').replace(/^v/, '')
+            const isUpdateAvailable = compareSemver(latestTag, currentVersion) > 0
+
+            resolve({
+              success: true,
+              currentVersion,
+              latestVersion: data.tag_name,
+              isUpdateAvailable,
+              releaseName: data.name || data.tag_name,
+              releaseNotes: data.body || '',
+              releaseUrl: data.html_url || 'https://github.com/LetterDmogus/Glide/releases/latest',
+              publishedAt: data.published_at
+            })
+          } else if (res.statusCode === 404) {
+            resolve({
+              success: true,
+              currentVersion,
+              latestVersion: `v${currentVersion}`,
+              isUpdateAvailable: false,
+              message: 'No releases published yet.'
+            })
+          } else {
+            resolve({
+              success: false,
+              currentVersion,
+              error: `GitHub API error: ${res.statusCode}`
+            })
+          }
+        } catch (err: any) {
+          resolve({ success: false, currentVersion, error: err.message })
+        }
+      })
+    })
+
+    req.on('error', (e) => {
+      resolve({ success: false, currentVersion, error: e.message })
+    })
+
+    req.setTimeout(8000, () => {
+      req.destroy()
+      resolve({ success: false, currentVersion, error: 'Request timeout' })
+    })
+  })
+})
+
+ipcMain.handle('app:getVersion', () => {
+  return app.getVersion()
+})
+
+ipcMain.handle('system:openExternal', async (_e, url: string) => {
+  if (url && (url.startsWith('https://') || url.startsWith('http://'))) {
+    await shell.openExternal(url)
+    return true
+  }
+  return false
+})
+
+ipcMain.handle('system:showItemInFolder', async (_e, itemPath: string) => {
+  if (itemPath && typeof itemPath === 'string') {
+    try {
+      shell.showItemInFolder(path.normalize(itemPath))
+      return true
+    } catch (err) {
+      console.error('[showItemInFolder error]:', err)
+      return false
+    }
+  }
+  return false
+})
+
+ipcMain.handle('system:getSystemMetrics', async () => {
+  try {
+    const metrics = app.getAppMetrics()
+    let totalCpu = 0
+    let totalMemoryWorkingSetKB = 0
+    let totalMemoryPrivateKB = 0
+
+    const processBreakdown = metrics.map(m => {
+      const cpuPercent = m.cpu.percentCPUUsage || 0
+      totalCpu += cpuPercent
+      const workingSetKB = m.memory?.workingSetSize || 0
+      const privateKB = m.memory?.privateBytes || 0
+      totalMemoryWorkingSetKB += workingSetKB
+      totalMemoryPrivateKB += privateKB
+
+      return {
+        pid: m.pid,
+        type: m.type,
+        cpuPercent: Math.round(cpuPercent * 10) / 10,
+        memoryMB: Math.round(workingSetKB / 1024)
+      }
+    })
+
+    return {
+      success: true,
+      totalCpu: Math.round(totalCpu * 10) / 10,
+      totalMemoryMB: Math.round(totalMemoryWorkingSetKB / 1024),
+      processes: processBreakdown
+    }
+  } catch (err: any) {
+    return {
+      success: false,
+      totalCpu: 0,
+      totalMemoryMB: 0,
+      processes: [],
+      error: err.message
+    }
+  }
+})
+
+function compareSemver(v1: string, v2: string): number {
+  const p1 = v1.replace(/^v/, '').split('.').map(Number)
+  const p2 = v2.replace(/^v/, '').split('.').map(Number)
+  for (let i = 0; i < Math.max(p1.length, p2.length); i++) {
+    const n1 = p1[i] || 0
+    const n2 = p2[i] || 0
+    if (n1 > n2) return 1
+    if (n1 < n2) return -1
+  }
+  return 0
+}
 
 // ── File Tree Builder ───────────────────────────────────────────
 async function buildFileTree(dirPath: string, depth = 0, showHidden = false): Promise<any[]> {

@@ -1,12 +1,16 @@
 <script setup lang="ts">
-import { ref, computed, onMounted, onBeforeUnmount, watch, defineAsyncComponent } from 'vue'
+import { ref, computed, onMounted, onBeforeUnmount, watch, defineAsyncComponent, nextTick } from 'vue'
 import TitleBar from './components/TitleBar.vue'
 import FileExplorer from './components/FileExplorer.vue'
+import DocumentOutline from './components/DocumentOutline.vue'
+import TabBar from './components/TabBar.vue'
 import EditorPanel from './components/EditorPanel.vue'
 import MediaPanel from './components/MediaPanel.vue'
+import PlanEditor from './components/PlanEditor.vue'
 import PreviewPanel from './components/PreviewPanel.vue'
 import SettingsView from './components/SettingsView.vue'
 import ProjectSearch from './components/ProjectSearch.vue'
+import TerminalChoiceModal from './components/TerminalChoiceModal.vue'
 
 // Lazy Load / Defer Heavy Secondary Components to Reclaim Initial RAM
 const Dashboard = defineAsyncComponent(() => import('./components/Dashboard.vue'))
@@ -16,8 +20,10 @@ const ConfirmModal = defineAsyncComponent(() => import('./components/ConfirmModa
 const MendeleyGuideModal = defineAsyncComponent(() => import('./components/MendeleyGuideModal.vue'))
 const SkillsView = defineAsyncComponent(() => import('./components/SkillsView.vue'))
 import AiInlinePopup from './components/AiInlinePopup.vue'
+import { compilerSettings } from './utils/settings'
 import { 
-  TerminalSquare, Folder, FileText, FileSearchCorner, LayoutDashboard, Settings, Bot
+  TerminalSquare, Folder, Settings, SquareCode, BookOpen,
+  Loader2, CheckCircle2, AlertTriangle, FileText, X, Activity, Cpu
 } from 'lucide-vue-next'
 import type { FileNode } from './components/FileExplorer.vue'
 import type { GlideConfig, GlideSection } from './electron.d'
@@ -79,15 +85,179 @@ function showConfirm(message: string, title: string = 'Konfirmasi'): Promise<boo
 // ── State ──────────────────────────────────────────────────────
 const showDashboard        = ref(false)
 const showCreateModal      = ref(false)
+const createModalPreset    = ref<string | undefined>(undefined)
+
+function openCreateProjectModal(preset?: string) {
+  createModalPreset.value = preset
+  showCreateModal.value = true
+}
 const showCommandPalette   = ref(false)
 const showMendeleyGuide    = ref(false)
 const showSkillsModal      = ref(false)
+
+// ── Project Structure Validator State (Floating Toast & Report File) ──
+const validatorToast = ref<{
+  show: boolean
+  status: 'validating' | 'healthy' | 'issues' | 'error'
+  title: string
+  sub: string
+  reportPath?: string
+} | null>(null)
+let validatorToastTimer: any = null
+
+async function runProjectValidator() {
+  if (!projectPath.value) {
+    showAlert('Silakan buka folder proyek terlebih dahulu sebelum menjalankan validator.', 'Validator Proyek', 'error')
+    return
+  }
+
+  if (validatorToastTimer) clearTimeout(validatorToastTimer)
+  validatorToast.value = {
+    show: true,
+    status: 'validating',
+    title: 'Validating Project Structure...',
+    sub: 'Memeriksa bab, konfigurasi, sitasi, dan aset gambar'
+  }
+
+  try {
+    const report = await window.electronAPI?.runValidator?.(projectPath.value)
+    if (!report) {
+      validatorToast.value = {
+        show: true,
+        status: 'error',
+        title: 'Validasi Gagal',
+        sub: 'Tidak dapat memperoleh hasil analisis proyek.'
+      }
+      validatorToastTimer = setTimeout(() => { validatorToast.value = null }, 5000)
+      return
+    }
+
+    if (report.passed && report.issues.length === 0) {
+      validatorToast.value = {
+        show: true,
+        status: 'healthy',
+        title: 'Project Structure is Healthy! (100%)',
+        sub: 'Semua file bab, config, dan sitasi tertata dengan baik.'
+      }
+      validatorToastTimer = setTimeout(() => { validatorToast.value = null }, 6000)
+    } else {
+      // Buat file validation-report.md di folder proyek agar user bisa membaca & memperbaiki langsung
+      const dateStr = new Date(report.timestamp).toLocaleString('id-ID')
+      const issuesMd = report.issues.map((issue, idx) => {
+        const badge = issue.type === 'error' ? '❌ **[ERROR]**' : (issue.type === 'warning' ? '⚠️ **[WARN]**' : 'ℹ️ **[INFO]**')
+        const fileRef = issue.file ? `\n   - **File:** \`${issue.file}\`${issue.line ? ` (Baris ${issue.line})` : ''}` : ''
+        const suggestion = issue.suggestion ? `\n   - **Saran:** ${issue.suggestion}` : ''
+        return `${idx + 1}. ${badge} **[${issue.category.toUpperCase()}]** ${issue.message}${fileRef}${suggestion}`
+      }).join('\n\n')
+
+      const reportContent = `# 🛡️ Project Validation Report
+
+> **Waktu Pemeriksaan:** ${dateStr}  
+> **Status:** ${report.passed ? '✅ Lolos dengan Catatan' : '❌ Perlu Perbaikan'}  
+> **Health Score:** ${report.score}/100  
+> **Ringkasan:** ${report.errorCount} Error, ${report.warningCount} Warning, ${report.infoCount} Info  
+
+---
+
+## 📋 Temuan & Catatan
+
+${issuesMd || '_Tidak ada isu terdeteksi._'}
+
+---
+*Laporan ini dibuat otomatis oleh Glide Project Validator.*
+`
+      const reportFilePath = `${projectPath.value}/validation-report.md`
+      await window.electronAPI?.createFile?.(reportFilePath, reportContent)
+      await refreshFileTree()
+
+      const issueSummary = `${report.errorCount > 0 ? report.errorCount + ' Error' : ''}${report.errorCount > 0 && report.warningCount > 0 ? ', ' : ''}${report.warningCount > 0 ? report.warningCount + ' Warning' : ''}` || 'Catatan terdeteksi'
+
+      validatorToast.value = {
+        show: true,
+        status: 'issues',
+        title: `Validation: ${issueSummary} (Score: ${report.score}%)`,
+        sub: 'Laporan telah dibuat di validation-report.md',
+        reportPath: reportFilePath
+      }
+    }
+  } catch (err: any) {
+    validatorToast.value = {
+      show: true,
+      status: 'error',
+      title: 'Validasi Error',
+      sub: err.message || 'Terjadi kesalahan saat memvalidasi proyek.'
+    }
+    validatorToastTimer = setTimeout(() => { validatorToast.value = null }, 5000)
+  }
+}
+
+function openValidationReport() {
+  if (validatorToast.value?.reportPath) {
+    openFile(validatorToast.value.reportPath)
+    validatorToast.value = null
+  }
+}
+
+function onValidatorToastClick() {
+  if (validatorToast.value?.reportPath) {
+    openValidationReport()
+  }
+}
+
+// ── Real-time Resource Monitor State ──
+const systemMetrics = ref<{
+  totalCpu: number
+  totalMemoryMB: number
+  processes: Array<{ pid: number; type: string; cpuPercent: number; memoryMB: number }>
+}>({
+  totalCpu: 0,
+  totalMemoryMB: 0,
+  processes: []
+})
+const showMetricsPopover = ref(false)
+let metricsTimer: any = null
+
+async function updateSystemMetrics() {
+  try {
+    const res = await window.electronAPI?.getSystemMetrics?.()
+    if (res?.success) {
+      systemMetrics.value = {
+        totalCpu: res.totalCpu,
+        totalMemoryMB: res.totalMemoryMB,
+        processes: res.processes || []
+      }
+    }
+  } catch {
+    // ignore
+  }
+}
+
 const showSettings         = ref(false)
 const showProjectSearch    = ref(false)
 const showSidebar          = ref(true)
+const sidebarViewMode      = ref<'outline' | 'files'>((localStorage.getItem('glide_sidebar_view_mode') as 'outline' | 'files') || 'outline')
+
+function setSidebarView(mode: 'outline' | 'files') {
+  if (showSidebar.value && sidebarViewMode.value === mode) {
+    showSidebar.value = false
+  } else {
+    showSidebar.value = true
+    sidebarViewMode.value = mode
+    localStorage.setItem('glide_sidebar_view_mode', mode)
+  }
+}
+
+const showEditor           = ref(true)
 const showTerminal   = ref(false)
 const showPreview    = ref(true) // Split view preview side-by-side
+const isPreviewDetached = ref(false) // True when preview is popped out to external window
+const isPreviewSwapped = ref(localStorage.getItem('glide_preview_swapped') === 'true') // True: Preview in center/left, Editor on right
 const showHiddenFiles = ref(localStorage.getItem('glide_show_hidden_files') === 'true')
+
+function toggleSwapPanels() {
+  isPreviewSwapped.value = !isPreviewSwapped.value
+  localStorage.setItem('glide_preview_swapped', String(isPreviewSwapped.value))
+}
 const projectPath    = ref<string | undefined>(undefined)
 const activeFile     = ref<string | undefined>(undefined)
 const fileContent    = ref<string>('')
@@ -208,8 +378,6 @@ const projectName = computed(() =>
   projectPath.value ? projectPath.value.split(/[\\/]/).pop() : undefined
 )
 
-const PlanEditor = defineAsyncComponent(() => import('./components/PlanEditor.vue'))
-
 const isMediaFile = computed(() => {
   if (!activeFile.value) return false
   const lower = activeFile.value.toLowerCase()
@@ -288,7 +456,15 @@ function startPreviewDrag() {
 
 function onPreviewDrag(e: MouseEvent) {
   if (!isDraggingPreview.value) return
-  const newWidth = window.innerWidth - e.clientX
+  let newWidth: number
+  if (isPreviewSwapped.value) {
+    // Saat swapped, preview berada di kiri (setelah sidebar jika sidebar terbuka)
+    const offsetLeft = showSidebar.value ? sidebarWidth.value + 48 : 48
+    newWidth = e.clientX - offsetLeft
+  } else {
+    // Normal: preview berada di sisi kanan layar
+    newWidth = window.innerWidth - e.clientX
+  }
   if (newWidth >= 250 && newWidth <= window.innerWidth - 300) {
     previewWidth.value = newWidth
   }
@@ -340,6 +516,24 @@ async function loadProjectByPath(dirPath: string) {
     if (result.isGlide) {
       triggerPreview()
     }
+    checkAndPromptTypstInstall()
+  }
+}
+
+async function checkAndPromptTypstInstall() {
+  try {
+    const status = await window.electronAPI?.checkTypstStatus?.()
+    if (!status || status.type !== 'cli') {
+      const confirmInstall = await showConfirm(
+        'Typst CLI is not installed on your system PATH.\n\nWould you like to install Typst CLI now for maximum compilation speed?',
+        'Install Typst CLI'
+      )
+      if (confirmInstall) {
+        openExternalTerminal()
+      }
+    }
+  } catch (err) {
+    console.warn('Failed to check Typst CLI status:', err)
   }
 }
 
@@ -364,6 +558,7 @@ async function openFolder() {
     if (result.isGlide) {
       triggerPreview()
     }
+    checkAndPromptTypstInstall()
   }
 }
 
@@ -436,6 +631,115 @@ fajar2026:
   openFile(bibPath)
 }
 
+async function openOrCreateConfig() {
+  if (!projectPath.value) return
+  const configPath = `${projectPath.value}/config.yaml`
+  const existing = await window.electronAPI?.readFile?.(configPath)
+  if (existing === null || existing === undefined) {
+    const glidePath = `${projectPath.value}/glide.yaml`
+    const existingGlide = await window.electronAPI?.readFile?.(glidePath)
+    if (existingGlide !== null && existingGlide !== undefined) {
+      openFile(glidePath)
+      return
+    }
+    const defaultCfg = `# ╔══════════════════════════════════════════════╗
+# ║          Konfigurasi Dokumen Glide           ║
+# ╚══════════════════════════════════════════════╝
+
+title: "${projectName.value || 'Dokumen Tugas'}"
+author: "Penulis"
+theme: "default"
+
+margin_top: "3cm"
+margin_bottom: "3cm"
+margin_left: "4cm"
+margin_right: "3cm"
+
+font_family: "'Times New Roman', serif"
+font_size: "12pt"
+line_spacing: 1.5
+text_align: "justify"
+citation_style: "apa"
+`
+    await window.electronAPI?.createFile?.(configPath, defaultCfg)
+    await refreshFileTree()
+  }
+  openFile(configPath)
+}
+
+async function revealCurrentInExplorer() {
+  const target = activeFile.value || projectPath.value
+  if (target && window.electronAPI?.showItemInFolder) {
+    await window.electronAPI.showItemInFolder(target)
+  }
+}
+
+async function openOrCreateCover() {
+  if (!projectPath.value) return
+  const coverPath = `${projectPath.value}/cover.typ`
+  const existing = await window.electronAPI?.readFile?.(coverPath)
+  if (existing === null || existing === undefined) {
+    const docTitle = (glideConfig.value?.title || projectName.value || 'JUDUL DOKUMEN').toUpperCase()
+    const docAuthor = glideConfig.value?.author || 'Nama Penulis'
+    const defaultCover = `---
+layout: "cover"
+---
+#align(center)[
+  #set text(size: 16pt, weight: "bold")
+  ${docTitle}
+
+  #v(5em)
+
+  #set text(size: 12pt, weight: "bold")
+  Disusun oleh: \\
+  ${docAuthor}
+
+  #v(6em)
+
+  #datetime.today().year().display()
+]
+`
+    await window.electronAPI?.createFile?.(coverPath, defaultCover)
+    await refreshFileTree()
+  }
+  openFile(coverPath)
+}
+
+async function createNewSection(sectionTitle: string) {
+  if (!projectPath.value || !sectionTitle.trim()) return
+  const sectionsDir = `${projectPath.value}/sections`
+  await window.electronAPI?.createDir?.(sectionsDir)
+
+  const existingNums = glideSections.value
+    .map(s => {
+      const match = s.name.match(/^(\d+)/)
+      return match ? parseInt(match[1], 10) : 0
+    })
+    .filter(n => n > 0)
+
+  const nextNum = existingNums.length > 0 ? Math.max(...existingNums) + 1 : (glideSections.value.filter(s => s.name !== 'cover.typ').length + 1)
+  const paddedNum = String(nextNum).padStart(2, '0')
+
+  const slug = sectionTitle.trim().toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '') || 'bab'
+  const fileName = `${paddedNum}_${slug}.typ`
+  const filePath = `${sectionsDir}/${fileName}`
+
+  const headingTitle = sectionTitle.trim().toUpperCase()
+  const content = `---
+layout: "main"
+---
+= ${headingTitle}
+
+Tulis isi ${sectionTitle.trim()} di sini...
+`
+  const success = await window.electronAPI?.createFile?.(filePath, content)
+  if (success) {
+    await refreshFileTree()
+    openFile(filePath)
+    if (isGlide.value) triggerPreview()
+  }
+}
+
 async function deleteFileOrFolder(pathToDelete: string) {
   const name = pathToDelete.split(/[\\/]/).pop()
 
@@ -487,21 +791,90 @@ async function renameItem(oldPath: string, newPath: string) {
   }
 }
 
+async function moveItem(srcPath: string, destDir: string) {
+  if (!srcPath || !destDir) return
+
+  const cleanSrc = srcPath.replace(/\\/g, '/')
+  const cleanDestDir = destDir.replace(/\\/g, '/').replace(/\/$/, '')
+  const itemName = cleanSrc.split('/').pop() || ''
+  const currentParent = cleanSrc.split('/').slice(0, -1).join('/')
+
+  // Jika dipindah ke folder yang sama, abaikan
+  if (cleanDestDir === currentParent) return
+
+  // Cegah memindahkan folder ke dalam dirinya sendiri
+  if (cleanDestDir === cleanSrc || cleanDestDir.startsWith(`${cleanSrc}/`)) {
+    showAlert(`⚠️ Tidak dapat memindahkan folder "${itemName}" ke dalam dirinya sendiri.`, 'Peringatan', 'error')
+    return
+  }
+
+  const newPath = `${cleanDestDir}/${itemName}`
+
+  // Cek apakah item dengan nama yang sama sudah ada di target
+  const targetDirTree = await window.electronAPI?.readDir?.(cleanDestDir)
+  const existingNode = Array.isArray(targetDirTree) ? targetDirTree.find(node => node.name.toLowerCase() === itemName.toLowerCase()) : null
+
+  if (existingNode) {
+    const shouldOverwrite = await showConfirm(
+      `File atau folder bernama "${itemName}" sudah ada di folder tujuan.\nApakah Anda ingin menimpa (overwrite) file tersebut?`,
+      'Nama File Duplikat'
+    )
+    if (!shouldOverwrite) return
+    // Hapus target lama terlebih dahulu jika user setuju menimpa
+    await window.electronAPI?.deleteItem?.(newPath)
+  }
+
+  const success = await window.electronAPI?.renameItem?.(srcPath, newPath)
+  if (success) {
+    // Update tab aktif jika file yang dipindah sedang dibuka
+    const tab = openTabs.value.find(t => t.path.replace(/\\/g, '/') === cleanSrc)
+    if (tab) {
+      tab.path = newPath
+      tab.name = itemName
+    }
+    if (activeFile.value && activeFile.value.replace(/\\/g, '/') === cleanSrc) {
+      activeFile.value = newPath
+    }
+    await refreshFileTree()
+    if (isGlide.value) triggerPreview()
+  } else {
+    showAlert(`Gagal memindahkan "${itemName}". Periksa izin akses folder.`, 'Error', 'error')
+  }
+}
+
 async function uploadImages(targetDir: string, files: FileList) {
-  const destFolder = targetDir || `${projectPath.value}/images`
+  const destFolder = targetDir || (propsPath() ? `${propsPath()}/images` : '')
+  if (!destFolder) return
+
   let count = 0
   for (let i = 0; i < files.length; i++) {
     const file = files[i]
     const srcPath = (file as any).path
     if (srcPath) {
       const destPath = `${destFolder}/${file.name}`
+
+      // Cek tabrakan nama file eksternal
+      const existing = await window.electronAPI?.readFile?.(destPath)
+      if (existing !== null && existing !== undefined) {
+        const replace = await showConfirm(
+          `File "${file.name}" sudah ada di folder tujuan.\nApakah Anda ingin menggantinya?`,
+          'File Sudah Ada'
+        )
+        if (!replace) continue
+      }
+
       const ok = await window.electronAPI?.copyFile?.(srcPath, destPath)
       if (ok) count++
     }
   }
   if (count > 0) {
     await refreshFileTree()
+    if (isGlide.value) triggerPreview()
   }
+}
+
+function propsPath() {
+  return projectPath.value || ''
 }
 
 async function fetchFileContent(filePath: string) {
@@ -565,6 +938,13 @@ async function openFile(filePath: string) {
   await fetchFileContent(filePath)
 }
 
+async function handleOpenHeading(data: { filePath: string; headingText: string; line: number }) {
+  await openFile(data.filePath)
+  nextTick(() => {
+    editorRef.value?.jumpToText(data.headingText)
+  })
+}
+
 function selectTab(tab: TabItem) {
   fetchFileContent(tab.path)
 }
@@ -622,6 +1002,17 @@ async function saveFile(content?: string) {
 // ── Typst Build & Preview (Debounced to save RAM & CPU) ───────────
 let previewTimer: any = null
 
+function syncToExternalPreview() {
+  if (window.electronAPI?.syncPreviewWindow) {
+    window.electronAPI.syncPreviewWindow({
+      pages: JSON.parse(JSON.stringify(previewPages.value || [])),
+      loading: previewLoading.value,
+      error: previewError.value,
+      projectDir: projectPath.value
+    })
+  }
+}
+
 async function triggerPreview() {
   if (!projectPath.value) return
   if (previewTimer) clearTimeout(previewTimer)
@@ -629,8 +1020,10 @@ async function triggerPreview() {
   previewTimer = setTimeout(async () => {
     previewLoading.value = true
     previewError.value = undefined
+    syncToExternalPreview()
 
-    const res = await window.electronAPI?.previewPdf?.(projectPath.value!)
+    const mode = compilerSettings.value.rendererMode || 'cli'
+    const res = await window.electronAPI?.previewPdf?.(projectPath.value!, mode)
     previewLoading.value = false
 
     if (res?.success && res.pages) {
@@ -638,7 +1031,44 @@ async function triggerPreview() {
     } else {
       previewError.value = res?.error || 'Gagal menderender dokumen Typst.'
     }
+    syncToExternalPreview()
   }, 300)
+}
+
+// Re-render jika user mengubah Renderer Engine di Settings (CLI <-> WASM)
+watch(() => compilerSettings.value.rendererMode, () => {
+  if (projectPath.value) {
+    triggerPreview()
+  }
+})
+
+async function popoutPreview() {
+  if (window.electronAPI?.openPreviewWindow) {
+    try {
+      isPreviewDetached.value = true
+      showPreview.value = false
+      syncToExternalPreview()
+      
+      const success = await window.electronAPI.openPreviewWindow()
+      if (success) {
+        setTimeout(() => { syncToExternalPreview() }, 100)
+        setTimeout(() => { syncToExternalPreview() }, 400)
+        setTimeout(() => { syncToExternalPreview() }, 800)
+      } else {
+        dockPreview()
+        showAlert('Gagal membuka jendela preview eksternal.', 'Pop-out Preview', 'error')
+      }
+    } catch (err: any) {
+      console.error('Error opening external preview window:', err)
+      dockPreview()
+      showAlert(`Gagal membuka jendela preview eksternal:\n${err?.message || err}`, 'Pop-out Preview', 'error')
+    }
+  }
+}
+
+function dockPreview() {
+  isPreviewDetached.value = false
+  showPreview.value = true
 }
 
 async function triggerBuildPdf() {
@@ -677,6 +1107,10 @@ async function triggerBuildDocx() {
 
 // ── Auto Restore Last Opened Project & Real-Time Targeted File Watcher (AI CLI Live Sync) ──
 let unwatchFileEvents: (() => void) | null = null
+let unwatchPreviewClose: (() => void) | null = null
+let unwatchPreviewRefresh: (() => void) | null = null
+let unwatchPreviewBuild: (() => void) | null = null
+let unwatchPreviewExplain: (() => void) | null = null
 
 // Kirim daftar file tab terbuka ke Electron main process untuk dipantau secara spesifik
 watch(
@@ -690,11 +1124,39 @@ watch(
   { deep: true, immediate: true }
 )
 
+const updateAvailableInfo = ref<{
+  latestVersion: string
+  releaseUrl: string
+  releaseName: string
+} | null>(null)
+
+function openExternalRelease(url?: string) {
+  if (url && window.electronAPI?.openExternal) {
+    window.electronAPI.openExternal(url)
+  }
+}
+
 onMounted(() => {
   const lastProject = localStorage.getItem('glide_last_project')
   if (lastProject) {
     loadProjectByPath(lastProject)
   }
+
+  // Silent Check for Updates on App Launch
+  setTimeout(async () => {
+    try {
+      const res = await window.electronAPI?.checkUpdate?.()
+      if (res?.isUpdateAvailable) {
+        updateAvailableInfo.value = {
+          latestVersion: res.latestVersion || '',
+          releaseUrl: res.releaseUrl || 'https://github.com/LetterDmogus/Glide/releases',
+          releaseName: res.releaseName || res.latestVersion || ''
+        }
+      }
+    } catch {
+      // Ignore background check failure
+    }
+  }, 3000)
 
   // Live Sync saat file yang ada di tab terbuka diubah oleh AI CLI eksternal
   if (window.electronAPI?.onFileChanged) {
@@ -720,10 +1182,45 @@ onMounted(() => {
       }
     })
   }
+
+  // Listeners dari External Preview Window
+  if (window.electronAPI?.onPreviewWindowClosed) {
+    unwatchPreviewClose = window.electronAPI.onPreviewWindowClosed(() => {
+      dockPreview()
+    })
+  }
+
+  if (window.electronAPI?.onPreviewRequestRefresh) {
+    unwatchPreviewRefresh = window.electronAPI.onPreviewRequestRefresh(() => {
+      syncToExternalPreview()
+      triggerPreview()
+    })
+  }
+
+  if (window.electronAPI?.onPreviewRequestBuildPdf) {
+    unwatchPreviewBuild = window.electronAPI.onPreviewRequestBuildPdf(() => {
+      triggerBuildPdf()
+    })
+  }
+
+  if (window.electronAPI?.onPreviewRequestExplainError) {
+    unwatchPreviewExplain = window.electronAPI.onPreviewRequestExplainError((err) => {
+      openAiExplainTab(err)
+    })
+  }
+
+  // Polling Resource Monitor setiap 2 detik
+  updateSystemMetrics()
+  metricsTimer = setInterval(updateSystemMetrics, 2000)
 })
 
 onBeforeUnmount(() => {
+  if (metricsTimer) clearInterval(metricsTimer)
   if (unwatchFileEvents) unwatchFileEvents()
+  if (unwatchPreviewClose) unwatchPreviewClose()
+  if (unwatchPreviewRefresh) unwatchPreviewRefresh()
+  if (unwatchPreviewBuild) unwatchPreviewBuild()
+  if (unwatchPreviewExplain) unwatchPreviewExplain()
 })
 
 watch([openTabs, activeFile], persistOpenTabs, { deep: true })
@@ -746,6 +1243,10 @@ window.addEventListener('keydown', (e) => {
   if ((e.ctrlKey || e.metaKey) && e.key === '`') {
     window.electronAPI?.openTerminal?.(projectPath.value)
   }
+  if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 's') {
+    e.preventDefault()
+    saveFile()
+  }
   if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'n') {
     e.preventDefault()
     showCreateModal.value = true
@@ -762,6 +1263,10 @@ window.addEventListener('keydown', (e) => {
     e.preventDefault()
     triggerBuildPdf()
   }
+  if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key.toLowerCase() === 'x') {
+    e.preventDefault()
+    toggleSwapPanels()
+  }
   if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key.toLowerCase() === 'f') {
     e.preventDefault()
     showProjectSearch.value = true
@@ -770,6 +1275,10 @@ window.addEventListener('keydown', (e) => {
   if ((e.ctrlKey || e.metaKey) && e.key === ',') {
     e.preventDefault()
     showSettings.value = true
+  }
+  if (e.shiftKey && e.altKey && e.key.toLowerCase() === 'r') {
+    e.preventDefault()
+    revealCurrentInExplorer()
   }
   if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'w') {
     e.preventDefault()
@@ -800,20 +1309,26 @@ window.addEventListener('keydown', (e) => {
     <TitleBar 
       :project-name="projectName" 
       :show-sidebar="showSidebar"
+      :show-editor="showEditor"
       :show-terminal="showTerminal"
       :show-preview="showPreview"
+      :is-preview-swapped="isPreviewSwapped"
       @open-folder="openFolder"
       @create-project="showCreateModal = true"
       @close-folder="closeCurrentFolder"
       @open-bib="openOrCreateBibliography"
       @save-file="() => saveFile()"
+      @reveal-in-explorer="revealCurrentInExplorer"
       @toggle-sidebar="showSidebar = !showSidebar"
+      @toggle-editor="showEditor = !showEditor"
       @toggle-terminal="openExternalTerminal"
       @toggle-preview="showPreview = !showPreview"
+      @swap-panels="toggleSwapPanels"
       @export-pdf="triggerBuildPdf"
       @export-docx="triggerBuildDocx"
       @open-mendeley-guide="showMendeleyGuide = true"
       @open-skills-store="showSkillsModal = true"
+      @open-validator="runProjectValidator"
       @open-palette="showCommandPalette = true"
       @editor-undo="handleEditorUndo"
       @editor-redo="handleEditorRedo"
@@ -829,38 +1344,30 @@ window.addEventListener('keydown', (e) => {
       <!-- Activity Bar -->
       <div class="activity-bar">
         <div class="activity-top">
+          <!-- Outline / Struktur Dokumen Tab -->
           <button 
             class="activity-btn" 
-            :class="{ active: showSidebar }"
-            @click="showSidebar = !showSidebar"
+            :class="{ active: showSidebar && sidebarViewMode === 'outline' }"
+            @click="setSidebarView('outline')"
+            title="Struktur Dokumen (Bab & Pengaturan)"
+          >
+            <BookOpen :size="20" />
+          </button>
+
+          <!-- File Explorer Tab -->
+          <button 
+            class="activity-btn" 
+            :class="{ active: showSidebar && sidebarViewMode === 'files' }"
+            @click="setSidebarView('files')"
             title="File Explorer (Ctrl+B)"
           >
             <Folder :size="20" />
           </button>
+
           <button class="activity-btn" @click="showProjectSearch = true" title="Search in Project">
             <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
               <circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/>
             </svg>
-          </button>
-
-          <!-- Dashboard Button -->
-          <button 
-            class="activity-btn" 
-            :class="{ active: showDashboard || !projectPath }" 
-            @click="showDashboard = !showDashboard" 
-            title="Project Dashboard"
-          >
-            <LayoutDashboard :size="20" />
-          </button>
-
-          <!-- Toggle Preview Button -->
-          <button 
-            class="activity-btn" 
-            :class="{ active: showPreview }" 
-            @click="showPreview = !showPreview" 
-            title="Toggle Live Preview (Ctrl+P)"
-          >
-            <FileSearchCorner :size="20" />
           </button>
 
           <!-- Open in Terminal Button -->
@@ -873,76 +1380,152 @@ window.addEventListener('keydown', (e) => {
           </button>
         </div>
         <div class="activity-bottom">
+          <!-- Resource Monitor Mini Gauge & Trigger -->
+          <div class="metrics-trigger-wrapper">
+            <button 
+              class="activity-btn metrics-btn" 
+              :class="{ active: showMetricsPopover }"
+              @click="showMetricsPopover = !showMetricsPopover"
+              title="Glide Resource Monitor (CPU & RAM)"
+            >
+              <Cpu :size="18" />
+              <span class="metrics-mini-badge" :class="{ 'metrics-warning': systemMetrics.totalMemoryMB > 500 }">
+                {{ systemMetrics.totalMemoryMB }}M
+              </span>
+            </button>
+
+            <!-- Resource Monitor Breakdown Popover -->
+            <Transition name="panel-fade">
+              <div v-if="showMetricsPopover" class="metrics-popover" @click.stop>
+                <div class="metrics-popover-header">
+                  <div class="metrics-popover-title">
+                    <Activity :size="13" class="icon-accent" />
+                    <span>RESOURCE MONITOR</span>
+                  </div>
+                  <button class="metrics-popover-close" @click="showMetricsPopover = false" title="Tutup">
+                    <X :size="12" />
+                  </button>
+                </div>
+
+                <div class="metrics-stats-summary">
+                  <div class="metric-card">
+                    <span class="metric-label">TOTAL RAM</span>
+                    <span class="metric-val" :class="{ 'metric-high': systemMetrics.totalMemoryMB > 500 }">
+                      {{ systemMetrics.totalMemoryMB }} <span class="metric-unit">MB</span>
+                    </span>
+                  </div>
+                  <div class="metric-card">
+                    <span class="metric-label">TOTAL CPU</span>
+                    <span class="metric-val" :class="{ 'metric-high': systemMetrics.totalCpu > 40 }">
+                      {{ systemMetrics.totalCpu }} <span class="metric-unit">%</span>
+                    </span>
+                  </div>
+                </div>
+
+                <div class="metrics-process-list">
+                  <div class="metrics-process-head">PROCESS BREAKDOWN</div>
+                  <div 
+                    v-for="proc in systemMetrics.processes" 
+                    :key="proc.pid" 
+                    class="metrics-process-row"
+                  >
+                    <div class="metrics-proc-name">
+                      <span class="proc-type">{{ proc.type }}</span>
+                      <span class="proc-pid">PID {{ proc.pid }}</span>
+                    </div>
+                    <div class="metrics-proc-usage">
+                      <span class="proc-cpu">{{ proc.cpuPercent }}% CPU</span>
+                      <span class="proc-ram">{{ proc.memoryMB }} MB</span>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </Transition>
+          </div>
+
           <button class="activity-btn" title="Settings" @click="showSettingsModal">
             <Settings :size="20" />
           </button>
         </div>
       </div>
 
-      <!-- Sidebar (File Explorer) with custom width & Drag Handle -->
-      <div 
-        v-show="showSidebar" 
-        class="sidebar-wrapper" 
-        :style="{ width: `${sidebarWidth}px` }"
-      >
-        <FileExplorer
-          :project-path="projectPath"
-          :tree="fileTree"
-          :active-file="activeFile"
-          :show-hidden="showHiddenFiles"
-          @preview-file="previewFile"
-          @open-file="openFile"
-          @open-folder="openFolder"
-          @refresh="refreshFileTree"
-          @create-file="createNewFile"
-          @create-folder="createNewFolder"
-          @rename-item="renameItem"
-          @delete-item="deleteFileOrFolder"
-          @upload-image="uploadImages"
-          @toggle-hidden="toggleHiddenFiles"
-        />
-        <!-- Resize Handle Right -->
-        <div class="resize-handle handle-right" @mousedown="startSidebarDrag"></div>
-      </div>
+      <!-- Sidebar with Minimal Header, Views & Drag Handle -->
+      <Transition name="sidebar-slide">
+        <div 
+          v-if="showSidebar" 
+          class="sidebar-wrapper" 
+          :style="{ width: `${sidebarWidth}px` }"
+        >
+          <!-- Document Outline View -->
+          <div v-show="sidebarViewMode === 'outline'" class="sidebar-view-pane">
+            <DocumentOutline
+              :project-path="projectPath"
+              :is-glide="isGlide"
+              :config="glideConfig"
+              :sections="glideSections"
+              :active-file="activeFile"
+              @open-file="openFile"
+              @open-heading="handleOpenHeading"
+              @open-config="openOrCreateConfig"
+              @open-bib="openOrCreateBibliography"
+              @open-cover="openOrCreateCover"
+              @create-section="createNewSection"
+              @delete-section="deleteFileOrFolder"
+              @refresh="refreshFileTree"
+              @validate="runProjectValidator"
+              @switch-to-files="sidebarViewMode = 'files'"
+            />
+          </div>
+
+          <!-- File Explorer View -->
+          <div v-show="sidebarViewMode === 'files'" class="sidebar-view-pane">
+            <FileExplorer
+              :project-path="projectPath"
+              :tree="fileTree"
+              :active-file="activeFile"
+              :show-hidden="showHiddenFiles"
+              @preview-file="previewFile"
+              @open-file="openFile"
+              @open-folder="openFolder"
+              @refresh="refreshFileTree"
+              @create-file="createNewFile"
+              @create-folder="createNewFolder"
+              @rename-item="renameItem"
+              @move-item="moveItem"
+              @delete-item="deleteFileOrFolder"
+              @upload-image="uploadImages"
+              @toggle-hidden="toggleHiddenFiles"
+              @open-config="openOrCreateConfig"
+              @open-bib="openOrCreateBibliography"
+            />
+          </div>
+          <!-- Resize Handle Right -->
+          <div class="resize-handle handle-right" @mousedown="startSidebarDrag"></div>
+        </div>
+      </Transition>
 
       <!-- Main editor area + terminal OR Dashboard -->
       <Dashboard
-        v-if="!projectPath || showDashboard"
+        v-if="!projectPath"
         @open-folder="openFolder"
         @open-project-path="loadProjectByPath"
-        @create-project="showCreateModal = true"
+        @create-project="openCreateProjectModal"
       />
 
       <div v-else class="main-area">
-        <!-- Multi Tab Bar -->
-        <div class="tab-bar">
-          <template v-if="openTabs.length > 0">
-            <div 
-              v-for="tab in openTabs" 
-              :key="tab.path"
-              class="tab"
-              :class="{ active: activeFile === tab.path, preview: tab.isPreview, dirty: tab.isDirty }"
-              @click="selectTab(tab)"
-              @dblclick="tab.isPreview = false"
-            >
-              <Bot v-if="tab.isAiChat" :size="12" class="icon-accent" />
-              <FileText v-else :size="12" />
-              <span class="tab-title" :class="{ italic: tab.isPreview }">{{ tab.name }}</span>
-              <button class="tab-close" @click="closeTab(tab.path, $event)" :title="tab.isDirty ? 'Belum disimpan' : 'Tutup'">
-                <span v-if="tab.isDirty" class="dirty-dot">●</span>
-                <span v-else class="close-x">×</span>
-              </button>
-            </div>
-          </template>
-          <div v-else class="tab-empty">
-            Belum ada file terbuka
-          </div>
-        </div>
+        <!-- Multi Tab Bar Component -->
+        <TabBar
+          :open-tabs="openTabs"
+          :active-file="activeFile"
+          @select-tab="selectTab"
+          @close-tab="closeTab"
+          @pin-tab="(tab) => tab.isPreview = false"
+        />
 
         <!-- Split View Content: Editor / Media / AI Tab vs Live Preview -->
-        <div class="split-workspace">
+        <div class="split-workspace" :class="{ 'swapped-panels': isPreviewSwapped }">
           <!-- Main Workspace: MediaPanel vs AiTab vs EditorPanel -->
-          <div class="editor-container">
+          <div v-if="showEditor" class="editor-container">
             <div v-if="isAiTab" class="ai-tab-panel">
               <AiInlinePopup
                 :selected-text="''"
@@ -979,23 +1562,51 @@ window.addEventListener('keydown', (e) => {
             />
           </div>
 
-          <!-- Side-by-Side Resizable Live Preview Panel -->
-          <div 
-            v-if="showPreview" 
-            class="preview-wrapper" 
-            :style="{ width: `${previewWidth}px` }"
-          >
-            <!-- Resize Handle Left -->
-            <div class="resize-handle handle-left" @mousedown="startPreviewDrag"></div>
-            <PreviewPanel
-              :pages="previewPages"
-              :loading="previewLoading"
-              :error="previewError"
-              :project-dir="projectPath"
-              @refresh="triggerPreview"
-              @build-pdf="triggerBuildPdf"
-              @explain-error="openAiExplainTab"
-            />
+          <!-- Side-by-Side / Full Width Resizable Live Preview Panel -->
+          <Transition name="preview-fade">
+            <div 
+              v-if="showPreview" 
+              class="preview-wrapper" 
+              :style="showEditor ? { width: `${previewWidth}px` } : { flex: 1, width: '100%' }"
+            >
+              <!-- Resize Handle (di kiri jika preview di kanan, di kanan jika preview di kiri) -->
+              <div 
+                v-if="showEditor" 
+                class="resize-handle" 
+                :class="isPreviewSwapped ? 'handle-right' : 'handle-left'" 
+                @mousedown="startPreviewDrag"
+              ></div>
+              <PreviewPanel
+                :pages="previewPages"
+                :loading="previewLoading"
+                :error="previewError"
+                :project-dir="projectPath"
+                :is-external="false"
+                @refresh="triggerPreview"
+                @build-pdf="triggerBuildPdf"
+                @explain-error="openAiExplainTab"
+                @popout="popoutPreview"
+              />
+            </div>
+          </Transition>
+
+          <!-- Placeholder when both Editor and Preview are toggled off -->
+          <div v-if="!showEditor && !showPreview" class="empty-panels-placeholder">
+            <div class="empty-placeholder-card">
+              <div class="empty-icon-wrap">
+                <SquareCode :size="32" class="icon-muted" />
+              </div>
+              <h3>No panels are currently open</h3>
+              <p>Re-open the Code Editor or Live Preview using the toggle buttons in the top right bar.</p>
+              <div class="empty-actions">
+                <button class="panel-btn primary" @click="showEditor = true">
+                  <span>Open Code Editor</span>
+                </button>
+                <button class="panel-btn primary" @click="showPreview = true">
+                  <span>Open Live Preview</span>
+                </button>
+              </div>
+            </div>
           </div>
         </div>
       </div>
@@ -1010,35 +1621,12 @@ window.addEventListener('keydown', (e) => {
       @open="openProjectSearchFile" 
     />
 
-    <!-- Terminal Selection Modal (Windows) -->
-    <div v-if="showTerminalModal" class="terminal-modal-overlay" @click.self="showTerminalModal = false">
-      <div class="terminal-modal-card">
-        <div class="terminal-modal-header">
-          <TerminalSquare :size="16" class="icon-accent" />
-          <h3>Pilih Terminal External</h3>
-        </div>
-        <p class="terminal-modal-desc">Buka direktori proyek aktif di terminal Windows pilihan Anda:</p>
-        
-        <div class="terminal-options-list">
-          <button class="terminal-opt-btn" @click="launchTerminalChoice('powershell')">
-            <span class="opt-title">PowerShell</span>
-            <span class="opt-sub">powershell.exe (Rekomendasi Default)</span>
-          </button>
-          
-          <button class="terminal-opt-btn" @click="launchTerminalChoice('cmd')">
-            <span class="opt-title">Command Prompt</span>
-            <span class="opt-sub">cmd.exe (Windows Standard)</span>
-          </button>
-
-          <button class="terminal-opt-btn" @click="launchTerminalChoice('gitbash')">
-            <span class="opt-title">Git Bash</span>
-            <span class="opt-sub">git-bash.exe (Unix Emulation)</span>
-          </button>
-        </div>
-
-        <button class="terminal-cancel-btn" @click="showTerminalModal = false">Batal</button>
-      </div>
-    </div>
+    <!-- Terminal Selection Modal (Windows Component) -->
+    <TerminalChoiceModal
+      v-if="showTerminalModal"
+      @select="launchTerminalChoice"
+      @close="showTerminalModal = false"
+    />
 
     <!-- Skills & AI Rules Store View -->
     <SkillsView
@@ -1046,6 +1634,7 @@ window.addEventListener('keydown', (e) => {
       :project-path="projectPath"
       @close="showSkillsModal = false"
       @skill-installed="() => { if (projectPath) loadProjectByPath(projectPath); }"
+      @run-validator="runProjectValidator"
     />
 
     <!-- Mendeley Guide Modal -->
@@ -1057,6 +1646,7 @@ window.addEventListener('keydown', (e) => {
     <!-- Create Project Modal -->
     <CreateProjectModal
       v-if="showCreateModal"
+      :initial-preset="createModalPreset"
       @close="showCreateModal = false"
       @created="(pDir) => { showCreateModal = false; loadProjectByPath(pDir); }"
     />
@@ -1089,347 +1679,75 @@ window.addEventListener('keydown', (e) => {
       @confirm="dialogState.onConfirm?.()"
       @cancel="dialogState.onCancel?.()"
     />
+
+    <!-- Project Structure Validator Floating Toast Banner (Windows Style) -->
+    <Transition name="panel-fade">
+      <div 
+        v-if="validatorToast?.show" 
+        class="win-toast-banner validator-toast-banner"
+        :class="{
+          'toast-status-loading': validatorToast.status === 'validating',
+          'toast-status-healthy': validatorToast.status === 'healthy',
+          'toast-status-issues': validatorToast.status === 'issues',
+          'toast-status-error': validatorToast.status === 'error',
+          'toast-clickable': !!validatorToast.reportPath
+        }"
+        @click="onValidatorToastClick"
+        :title="validatorToast.reportPath ? 'Klik untuk membuka laporan' : ''"
+      >
+        <div class="win-toast-header">
+          <div class="win-toast-app-info">
+            <span class="win-toast-app-title">GLIDE PROJECT VALIDATOR</span>
+          </div>
+          <button 
+            class="win-toast-close" 
+            @click.stop="validatorToast = null" 
+            title="Tutup"
+            aria-label="Tutup"
+          >
+            <X :size="13" />
+          </button>
+        </div>
+
+        <div class="win-toast-body">
+          <div class="validator-toast-icon">
+            <Loader2 v-if="validatorToast.status === 'validating'" class="spin" :size="20" />
+            <CheckCircle2 v-else-if="validatorToast.status === 'healthy'" :size="20" />
+            <AlertTriangle v-else :size="20" />
+          </div>
+
+          <div class="win-toast-content">
+            <div class="win-toast-title">{{ validatorToast.title }}</div>
+            <div class="win-toast-sub">{{ validatorToast.sub }}</div>
+          </div>
+        </div>
+
+        <div v-if="validatorToast.reportPath" class="win-toast-footer">
+          <span class="win-toast-hint">
+            <FileText :size="12" /> Klik untuk membaca laporan
+          </span>
+        </div>
+      </div>
+    </Transition>
+
+    <!-- Update Available Floating Toast Banner -->
+    <Transition name="panel-fade">
+      <div v-if="updateAvailableInfo" class="update-toast-banner">
+        <div class="update-toast-content">
+          <span class="update-toast-title">🚀 Glide {{ updateAvailableInfo.latestVersion }} Available</span>
+          <span class="update-toast-sub">A new release is available on GitHub.</span>
+        </div>
+        <div class="update-toast-actions">
+          <button class="toast-btn primary" @click="openExternalRelease(updateAvailableInfo.releaseUrl)">
+            Update Now
+          </button>
+          <button class="toast-btn secondary" @click="updateAvailableInfo = null">
+            Dismiss
+          </button>
+        </div>
+      </div>
+    </Transition>
   </div>
 </template>
 
-<style>
-#app-shell {
-  width: 100vw;
-  height: 100vh;
-  display: flex;
-  flex-direction: column;
-  overflow: hidden;
-  background: var(--bg-base);
-}
 
-.workspace {
-  flex: 1;
-  display: flex;
-  overflow: hidden;
-}
-
-/* Activity Bar */
-.activity-bar {
-  width: 48px;
-  flex-shrink: 0;
-  background: var(--bg-surface);
-  border-right: 1px solid var(--border);
-  display: flex;
-  flex-direction: column;
-  justify-content: space-between;
-  padding: 6px 0;
-  z-index: 10;
-}
-.activity-top, .activity-bottom {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 2px;
-}
-.activity-btn {
-  width: 40px; height: 40px;
-  border: none; background: transparent;
-  color: var(--text-muted);
-  border-radius: 8px; cursor: pointer;
-  display: flex; align-items: center; justify-content: center;
-  transition: color 0.15s, background 0.15s;
-  position: relative;
-}
-.activity-btn:hover { color: var(--text-primary); background: var(--bg-hover); }
-.activity-btn.active { 
-  color: var(--text-primary);
-  background: var(--accent-soft);
-}
-.activity-btn.active::before {
-  content: '';
-  position: absolute;
-  left: 0; top: 25%; height: 50%; width: 2px;
-  background: var(--accent);
-  border-radius: 0 2px 2px 0;
-}
-
-/* Sidebar Wrapper & Resizer */
-.sidebar-wrapper {
-  position: relative;
-  height: 100%;
-  flex-shrink: 0;
-  display: flex;
-}
-.resize-handle {
-  position: absolute;
-  top: 0; bottom: 0;
-  width: 5px;
-  z-index: 20;
-  cursor: col-resize;
-  transition: background 0.2s;
-}
-.resize-handle:hover {
-  background: var(--accent);
-}
-.handle-right {
-  right: -2px;
-}
-.handle-left {
-  left: -2px;
-}
-
-/* Preview Wrapper */
-.preview-wrapper {
-  position: relative;
-  height: 100%;
-  flex-shrink: 0;
-  display: flex;
-}
-
-/* Main area */
-.main-area {
-  flex: 1;
-  display: flex;
-  flex-direction: column;
-  overflow: hidden;
-}
-
-.terminal-wrapper {
-  position: relative;
-  display: flex;
-  flex-direction: column;
-  flex-shrink: 0;
-  min-height: 100px;
-}
-
-.terminal-wrapper > .terminal-panel {
-  height: 100%;
-}
-
-.terminal-resize-handle {
-  position: absolute;
-  top: 0;
-  left: 0;
-  right: 0;
-  width: 100%;
-  height: 5px;
-  z-index: 20;
-  cursor: row-resize;
-  background: transparent;
-  pointer-events: auto;
-}
-
-.terminal-resize-handle:hover,
-.terminal-resize-handle.dragging {
-  background: var(--accent);
-}
-
-/* Split Workspace (Editor + Live Preview) */
-.split-workspace {
-  flex: 1;
-  display: flex;
-  overflow: hidden;
-}
-
-.editor-container {
-  flex: 1;
-  display: flex;
-  flex-direction: column;
-  overflow: hidden;
-  min-width: 250px;
-}
-
-/* Tab bar */
-.tab-bar {
-  display: flex;
-  align-items: center;
-  background: var(--bg-surface);
-  border-bottom: 1px solid var(--border);
-  height: 36px;
-  flex-shrink: 0;
-  overflow-x: auto;
-}
-.tab {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  padding: 0 14px;
-  height: 100%;
-  border-right: 1px solid var(--border);
-  font-size: 12.5px;
-  color: var(--text-secondary);
-  background: var(--bg-surface);
-  flex-shrink: 0;
-  cursor: pointer;
-  user-select: none;
-  transition: background 0.1s, color 0.1s;
-}
-.tab:hover {
-  background: var(--bg-hover);
-  color: var(--text-primary);
-}
-.tab.active {
-  color: var(--text-primary);
-  background: var(--bg-base);
-  border-top: 2px solid var(--accent);
-}
-.tab-title.italic {
-  font-style: italic;
-  opacity: 0.85;
-}
-.tab-close {
-  width: 16px; height: 16px;
-  border: none; background: transparent;
-  color: var(--text-muted); cursor: pointer;
-  border-radius: 3px; font-size: 14px;
-  display: flex; align-items: center; justify-content: center;
-  transition: background 0.15s, color 0.15s;
-  line-height: 1;
-  margin-left: 4px;
-}
-.tab-close:hover { background: var(--bg-hover); color: var(--text-primary); }
-.dirty-dot {
-  color: #fbbf24;
-  font-size: 11px;
-  line-height: 1;
-}
-.tab-empty {
-  flex: 1;
-  display: flex;
-  align-items: center;
-  padding: 0 16px;
-  color: var(--text-muted);
-  font-size: 12px;
-}
-.tab-bar-actions {
-  margin-left: auto;
-  padding: 0 8px;
-  display: flex;
-  align-items: center;
-  gap: 2px;
-}
-.icon-btn-sm {
-  width: 26px; height: 26px;
-  border: none; background: transparent;
-  color: var(--text-muted);
-  border-radius: 5px; cursor: pointer;
-  display: flex; align-items: center; justify-content: center;
-  transition: background 0.15s, color 0.15s;
-}
-.icon-btn-sm:hover { background: var(--bg-hover); color: var(--text-primary); }
-.icon-btn-sm.active { color: var(--accent); background: var(--accent-soft); }
-
-.ai-tab-panel {
-  flex: 1;
-  height: 100%;
-  width: 100%;
-  display: flex;
-  background: var(--bg-base);
-  padding: 16px;
-  overflow: hidden;
-}
-.ai-tab-popup-full {
-  position: relative !important;
-  top: unset !important;
-  left: unset !important;
-  width: 100% !important;
-  max-width: 100% !important;
-  height: 100% !important;
-  max-height: 100% !important;
-  border-radius: 8px !important;
-}
-
-
-
-/* Terminal Options Modal (Windows) */
-.terminal-modal-overlay {
-  position: fixed;
-  top: 0; left: 0; right: 0; bottom: 0;
-  background: rgba(0, 0, 0, 0.65);
-  backdrop-filter: blur(4px);
-  z-index: 9999;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  animation: fadeIn 0.15s ease-out;
-}
-
-.terminal-modal-card {
-  width: 360px;
-  max-width: 90vw;
-  background: #181a26;
-  border: 1px solid var(--border-focus);
-  border-radius: 10px;
-  padding: 18px;
-  box-shadow: 0 16px 40px rgba(0, 0, 0, 0.7);
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-}
-
-.terminal-modal-header {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-.terminal-modal-header h3 {
-  font-size: 14px;
-  font-weight: 600;
-  color: var(--accent-light);
-  margin: 0;
-}
-
-.terminal-modal-desc {
-  font-size: 11.5px;
-  color: #94a3b8;
-  margin: 0;
-  line-height: 1.4;
-}
-
-.terminal-options-list {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  margin-top: 4px;
-}
-
-.terminal-opt-btn {
-  display: flex;
-  flex-direction: column;
-  align-items: flex-start;
-  gap: 2px;
-  padding: 10px 12px;
-  background: rgba(255, 255, 255, 0.04);
-  border: 1px solid rgba(255, 255, 255, 0.08);
-  border-radius: 6px;
-  cursor: pointer;
-  text-align: left;
-  transition: all 0.15s ease;
-}
-
-.terminal-opt-btn:hover {
-  background: var(--accent-soft);
-  border-color: var(--border-focus);
-}
-
-.opt-title {
-  font-size: 12px;
-  font-weight: 600;
-  color: #f1f5f9;
-}
-
-.opt-sub {
-  font-size: 10.5px;
-  color: #94a3b8;
-}
-
-.terminal-cancel-btn {
-  align-self: flex-end;
-  background: transparent;
-  border: none;
-  color: #64748b;
-  font-size: 12px;
-  cursor: pointer;
-  padding: 4px 8px;
-  border-radius: 4px;
-}
-.terminal-cancel-btn:hover {
-  color: #f1f5f9;
-  background: rgba(255, 255, 255, 0.08);
-}
-</style>

@@ -136,6 +136,91 @@ async function copyDirectory(src: string, dest: string) {
   }
 }
 
+/**
+ * Menghasilkan isi config.yaml default lengkap (termasuk section linter) sebagai string YAML.
+ * Dipanggil saat config.yaml tidak ditemukan untuk auto-regenerate ke disk.
+ *
+ * CATATAN ESCAPING:
+ * Pattern ditulis dalam single-quoted YAML (tanda kutip tunggal).
+ * Di YAML single-quoted, backslash adalah literal — tidak ada escape sequence.
+ * Jadi \b, \., dll langsung valid sebagai regex tanpa escaping tambahan.
+ * Di TypeScript template literal: \\ → menghasilkan \ di file → YAML baca sebagai \ (literal) ✓
+ */
+export function generateDefaultConfigYaml(): string {
+  return `# =============================================================================
+# Konfigurasi Proyek Glide
+# File ini di-generate otomatis. Ubah sesuai kebutuhan proyek Anda.
+# =============================================================================
+
+title: "${CONFIG_DEFAULTS.title}"
+author: "${CONFIG_DEFAULTS.author}"
+theme: "${CONFIG_DEFAULTS.theme}"
+accent_color: "${CONFIG_DEFAULTS.accent_color}"
+
+# Layout & Margin
+margin_top: "${CONFIG_DEFAULTS.margin_top}"
+margin_bottom: "${CONFIG_DEFAULTS.margin_bottom}"
+margin_left: "${CONFIG_DEFAULTS.margin_left}"
+margin_right: "${CONFIG_DEFAULTS.margin_right}"
+
+# Tipografi
+font_size: "${CONFIG_DEFAULTS.font_size}"
+font_family: "${CONFIG_DEFAULTS.font_family}"
+line_spacing: ${CONFIG_DEFAULTS.line_spacing}
+text_align: "${CONFIG_DEFAULTS.text_align}"
+heading_align: "${CONFIG_DEFAULTS.heading_align}"
+first_line_indent: "${CONFIG_DEFAULTS.first_line_indent}"
+
+# Spasi
+paragraph_spacing: "${CONFIG_DEFAULTS.paragraph_spacing}"
+heading_spacing: "${CONFIG_DEFAULTS.heading_spacing}"
+list_indent: "${CONFIG_DEFAULTS.list_indent}"
+
+# Nomor Halaman & Sitasi
+page_number_style: "${CONFIG_DEFAULTS.page_number_style}"
+citation_style: "${CONFIG_DEFAULTS.citation_style}"
+appendix_label: "${CONFIG_DEFAULTS.appendix_label}"
+
+# Metadata (opsional)
+subject: ""
+keywords: ""
+
+# =============================================================================
+# Konfigurasi Linter Penulisan (Glide Validator)
+# Tambahkan kata, frasa, atau pola regex yang tidak boleh muncul di naskah.
+# Setiap entri: pattern (string/regex), message (opsional), severity (warning|info)
+# Gunakan single-quote (') untuk nilai pattern agar backslash regex (\b, \.) terbaca benar.
+# =============================================================================
+linter:
+  # File yang dikecualikan dari pemeriksaan penulisan (writing checks).
+  # Gunakan path relatif dari root proyek. Contoh: cover.typ, sections/lampiran.typ
+  exclude:
+    - cover.typ
+  blacklist:
+    - pattern: '\\bdll\\b\\.?'
+      message: "Hindari singkatan informal 'dll.' dalam karya tulis formal."
+      severity: warning
+    - pattern: '\\bdsb\\b\\.?'
+      message: "Hindari singkatan informal 'dsb.' dalam karya tulis formal."
+      severity: warning
+    - pattern: '\\betc\\b\\.?'
+      message: "Hindari 'etc.' - gunakan 'dan lain-lain' atau 'dan sebagainya'."
+      severity: warning
+    - pattern: '\\bi\\.e\\.'
+      message: "Hindari 'i.e.' - gunakan 'yaitu' dalam karya tulis berbahasa Indonesia."
+      severity: info
+    - pattern: '\\be\\.g\\.'
+      message: "Hindari 'e.g.' - gunakan 'misalnya' atau 'contohnya'."
+      severity: info
+    - pattern: '\\byg\\b'
+      message: "Hindari singkatan 'yg' - tulis 'yang' secara lengkap."
+      severity: warning
+    - pattern: '\\bkrn\\b'
+      message: "Hindari singkatan 'krn' - tulis 'karena' secara lengkap."
+      severity: warning
+`
+}
+
 export async function loadGlideConfig(dirPath: string): Promise<GlideConfig> {
   // Prefer config.yaml (v1.0 format), fallback to glide.yaml
   let cfgPath = path.join(dirPath, 'config.yaml')
@@ -143,7 +228,17 @@ export async function loadGlideConfig(dirPath: string): Promise<GlideConfig> {
   if (!hasConfig) {
     cfgPath = path.join(dirPath, 'glide.yaml')
     const hasGlide = await fs.stat(cfgPath).then(() => true).catch(() => false)
-    if (!hasGlide) return { ...CONFIG_DEFAULTS }
+    if (!hasGlide) {
+      // Tidak ada config sama sekali — auto-regenerate config.yaml dari defaults
+      try {
+        const newConfigContent = generateDefaultConfigYaml()
+        await fs.writeFile(path.join(dirPath, 'config.yaml'), newConfigContent, 'utf-8')
+        console.log('[Glide] config.yaml tidak ditemukan — dibuat ulang dari defaults.')
+      } catch (writeErr) {
+        console.warn('[Glide] Gagal membuat ulang config.yaml:', writeErr)
+      }
+      return { ...CONFIG_DEFAULTS }
+    }
   }
 
   try {
@@ -154,6 +249,7 @@ export async function loadGlideConfig(dirPath: string): Promise<GlideConfig> {
     return { ...CONFIG_DEFAULTS }
   }
 }
+
 
 export async function getGlideSections(dirPath: string): Promise<GlideSection[]> {
   const sectionsDir = path.join(dirPath, 'sections')

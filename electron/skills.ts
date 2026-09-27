@@ -18,7 +18,6 @@ export async function listAvailableSkills(appRoot: string, projectPath?: string)
     const validSkills: SkillItem[] = []
 
     for (const entry of entries) {
-      // Abaikan file bukan directory atau folder glide-ui-mockup
       if (!entry.isDirectory() || entry.name === 'glide-ui-mockup') continue
 
       const skillPath = path.join(skillsDir, entry.name)
@@ -30,7 +29,6 @@ export async function listAvailableSkills(appRoot: string, projectPath?: string)
       try {
         const content = await fs.readFile(skillMdPath, 'utf-8')
         
-        // Parse YAML Frontmatter (--- description: ... ---)
         const frontmatterMatch = content.match(/^---[\s\S]*?---/)
         if (frontmatterMatch) {
           const fmText = frontmatterMatch[0]
@@ -40,19 +38,16 @@ export async function listAvailableSkills(appRoot: string, projectPath?: string)
           }
         }
 
-        // Ambil H1 Title jika ada
         const firstHeader = content.match(/^#\s+(.+)$/m)
         if (firstHeader) {
           title = firstHeader[1].trim()
         } else {
-          // Format judul dari nama folder (misal: glide-boost -> Glide Boost)
           title = entry.name.replace(/-/g, ' ').replace(/\b\w/g, c => c.toUpperCase())
         }
       } catch {
-        // Fallback jika tidak ada SKILL.md
+        // Fallback
       }
 
-      // Cek apakah sudah ter-install di proyek aktif (.agents/skills/<name>)
       let isInstalled = false
       if (projectPath) {
         const destPath = path.join(projectPath, '.agents', 'skills', entry.name)
@@ -74,7 +69,7 @@ export async function listAvailableSkills(appRoot: string, projectPath?: string)
 }
 
 /**
- * Copies a bundled skill into <projectPath>/.agents/skills/<skillName>.
+ * Copies a bundled skill or installs a plugin into the project.
  */
 export async function installSkillToProject(
   appRoot: string,
@@ -82,6 +77,12 @@ export async function installSkillToProject(
   skillName: string
 ): Promise<{ success: boolean; error?: string }> {
   try {
+    // If it's the structure-validator plugin
+    if (skillName === 'structure-validator') {
+      const { installValidatorPluginFiles } = await import('./validator.ts')
+      return await installValidatorPluginFiles(projectPath)
+    }
+
     const srcDir = path.join(getSkillsDir(appRoot), skillName)
     const destDir = path.join(projectPath, '.agents', 'skills', skillName)
 

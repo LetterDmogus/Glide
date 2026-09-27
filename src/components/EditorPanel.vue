@@ -288,7 +288,7 @@ function buildState(content: string, path?: string) {
               return true
             }
           }
-          if ((e.ctrlKey || e.metaKey) && e.key === 's') {
+          if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 's') {
             e.preventDefault()
             if (editorView) emit('save', editorView.state.doc.toString())
           }
@@ -319,11 +319,37 @@ function triggerRedo() { if (editorView) redo(editorView) }
 function triggerSelectAll() { if (editorView) selectAll(editorView) }
 function triggerFind() { if (editorView) openSearchPanel(editorView) }
 
+function jumpToText(text: string) {
+  if (!editorView || !text) return
+  const doc = editorView.state.doc.toString()
+  let idx = doc.indexOf(text)
+  if (idx === -1) {
+    const cleanText = text.replace(/^=+/, '').trim()
+    const lines = doc.split(/\r?\n/)
+    let pos = 0
+    for (const l of lines) {
+      if (l.includes(cleanText)) {
+        idx = pos
+        break
+      }
+      pos += l.length + 1
+    }
+  }
+  if (idx !== -1) {
+    editorView.dispatch({
+      selection: { anchor: idx, head: idx },
+      scrollIntoView: true
+    })
+    editorView.focus()
+  }
+}
+
 defineExpose({
   triggerUndo,
   triggerRedo,
   triggerSelectAll,
-  triggerFind
+  triggerFind,
+  jumpToText
 })
 
 onMounted(() => nextTick(initEditor))
@@ -369,8 +395,8 @@ watch(() => props.content, (val) => {
     <div v-show="!filePath" class="editor-empty">
       <div class="editor-empty-inner">
         <FileText :size="48" class="empty-icon" />
-        <h2>Pilih file untuk mulai editing</h2>
-        <p>Klik file di panel kiri, atau gunakan</p>
+        <h2>Choose file to start editing</h2>
+        <p>Click any file on the left panel or use</p>
         <kbd>Ctrl+P</kbd>
       </div>
     </div>

@@ -1,15 +1,17 @@
 <script setup lang="ts">
-import { ref } from 'vue'
+import { ref, onMounted, onBeforeUnmount } from 'vue'
 import { 
   Undo2, Redo2, Search, Menu,
-  PanelLeft, PanelRight
+  PanelLeft, PanelRight, SquareCode, ArrowLeftRight
 } from 'lucide-vue-next'
 
 defineProps<{ 
   projectName?: string
   showSidebar?: boolean
+  showEditor?: boolean
   showTerminal?: boolean
   showPreview?: boolean
+  isPreviewSwapped?: boolean
 }>()
 
 const emit = defineEmits<{
@@ -18,13 +20,17 @@ const emit = defineEmits<{
   'close-folder': []
   'open-bib': []
   'save-file': []
+  'reveal-in-explorer': []
   'toggle-sidebar': []
+  'toggle-editor': []
   'toggle-terminal': []
   'toggle-preview': []
+  'swap-panels': []
   'export-pdf': []
   'export-docx': []
   'open-mendeley-guide': []
   'open-skills-store': []
+  'open-validator': []
   'nav-back': []
   'nav-forward': []
   'editor-undo': []
@@ -36,6 +42,24 @@ const emit = defineEmits<{
   'editor-find': []
   'open-palette': []
 }>()
+
+const isMaximized = ref(false)
+let unlistenMaximized: (() => void) | null = null
+
+onMounted(async () => {
+  if (window.electronAPI?.isMaximized) {
+    isMaximized.value = await window.electronAPI.isMaximized()
+  }
+  if (window.electronAPI?.onMaximizedChange) {
+    unlistenMaximized = window.electronAPI.onMaximizedChange((isMax) => {
+      isMaximized.value = isMax
+    })
+  }
+})
+
+onBeforeUnmount(() => {
+  if (unlistenMaximized) unlistenMaximized()
+})
 
 function minimize() { window.electronAPI?.minimize() }
 function maximize() { window.electronAPI?.maximize() }
@@ -69,6 +93,7 @@ const menus: MenuGroup[] = [
       { label: 'New GLD Project...', action: 'create-project', shortcut: 'Ctrl+N' },
       { label: 'Open Folder...', action: 'open-folder', shortcut: 'Ctrl+O' },
       { label: 'Save', action: 'save-file', shortcut: 'Ctrl+S' },
+      { label: 'Reveal in File Explorer', action: 'reveal-in-explorer', shortcut: 'Shift+Alt+R' },
       { label: 'Open Bibliography', action: 'open-bib' },
       { label: 'Close Folder', action: 'close-folder' },
       { label: '—' },
@@ -99,6 +124,7 @@ const menus: MenuGroup[] = [
     items: [
       { label: 'Toggle Primary Side Bar', action: 'toggle-sidebar', shortcut: 'Ctrl+B' },
       { label: 'Toggle PDF Live Preview', action: 'toggle-preview', shortcut: 'Ctrl+P' },
+      { label: 'Swap Editor & Preview Position', action: 'swap-panels', shortcut: 'Ctrl+Shift+X' },
       { label: 'Open in External Terminal', action: 'open-terminal', shortcut: 'Ctrl+`' }
     ]
   },
@@ -106,13 +132,15 @@ const menus: MenuGroup[] = [
     label: 'Run',
     items: [
       { label: 'Export PDF...', action: 'export-pdf', shortcut: 'Ctrl+Shift+E' },
-      { label: 'Export Word (.docx) [Experimental]...', action: 'export-docx', shortcut: 'Ctrl+Shift+W' }
+      { label: 'Export Docx', action: 'export-docx', shortcut: 'Ctrl+Shift+W' },
+      { label: '—' },
+      { label: 'Validate Project', action: 'open-validator' }
     ]
   },
   {
     label: 'Extensions',
     items: [
-      { label: 'AI Skills Store...', action: 'open-skills-store' },
+      { label: 'Extensions & Plugins Hub...', action: 'open-skills-store' },
       { label: 'Mendeley Integration Guide', action: 'open-mendeley-guide' }
     ]
   }
@@ -146,6 +174,9 @@ function handleItemClick(item: MenuItem) {
     case 'save-file':
       emit('save-file')
       break
+    case 'reveal-in-explorer':
+      emit('reveal-in-explorer')
+      break
     case 'toggle-sidebar':
       emit('toggle-sidebar')
       break
@@ -155,6 +186,9 @@ function handleItemClick(item: MenuItem) {
       break
     case 'toggle-preview':
       emit('toggle-preview')
+      break
+    case 'swap-panels':
+      emit('swap-panels')
       break
     case 'export-pdf':
       emit('export-pdf')
@@ -167,6 +201,9 @@ function handleItemClick(item: MenuItem) {
       break
     case 'open-skills-store':
       emit('open-skills-store')
+      break
+    case 'open-validator':
+      emit('open-validator')
       break
     case 'undo':
       emit('editor-undo')
@@ -279,11 +316,27 @@ if (typeof window !== 'undefined') {
         </button>
         <button 
           class="layout-btn" 
+          :class="{ active: showEditor }" 
+          @click="emit('toggle-editor')" 
+          title="Toggle Code Editor (Agent Mode View)"
+        >
+          <SquareCode :size="15" />
+        </button>
+        <button 
+          class="layout-btn" 
           :class="{ active: showPreview }" 
           @click="emit('toggle-preview')" 
           title="Toggle PDF Live Preview (Ctrl+P)"
         >
           <PanelRight :size="15" />
+        </button>
+        <button 
+          class="layout-btn" 
+          :class="{ active: isPreviewSwapped }" 
+          @click="emit('swap-panels')" 
+          :title="isPreviewSwapped ? 'Swap Panels: Move Code Editor to Left, Preview to Right' : 'Swap Panels: Move Preview to Center/Left, Code Editor to Right'"
+        >
+          <ArrowLeftRight :size="14" />
         </button>
       </div>
 
@@ -297,8 +350,14 @@ if (typeof window !== 'undefined') {
             <rect width="11" height="1" fill="currentColor"/>
           </svg>
         </button>
-        <button class="ctrl-btn maximize" @click="maximize" title="Maximize/Restore">
-          <svg width="10" height="10" viewBox="0 0 10 10">
+        <button class="ctrl-btn maximize" @click="maximize" :title="isMaximized ? 'Restore Down' : 'Maximize'">
+          <!-- Restore Icon (2 overlapping squares saat isMaximized) -->
+          <svg v-if="isMaximized" width="10" height="10" viewBox="0 0 10 10">
+            <path d="M2.5 2.5V0.5H9.5V7.5H7.5" fill="none" stroke="currentColor" stroke-width="1"/>
+            <rect x="0.5" y="2.5" width="7" height="7" fill="none" stroke="currentColor" stroke-width="1"/>
+          </svg>
+          <!-- Maximize Icon (1 square saat normal windowed) -->
+          <svg v-else width="10" height="10" viewBox="0 0 10 10">
             <rect x="0.5" y="0.5" width="9" height="9" fill="none" stroke="currentColor" stroke-width="1"/>
           </svg>
         </button>

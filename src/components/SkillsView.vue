@@ -2,15 +2,9 @@
 import { ref, computed, onMounted } from 'vue'
 import { 
   Sparkles, ArrowLeft, Package, Check, Download, 
-  Search, ShieldCheck, Zap, Layers 
+  Search, ShieldCheck, Zap, Layers, Wrench, Play
 } from 'lucide-vue-next'
-
-export interface SkillItem {
-  name: string
-  title: string
-  description: string
-  isInstalled?: boolean
-}
+import type { ExtensionItem } from '../electron.d'
 
 const props = defineProps<{
   projectPath?: string
@@ -19,73 +13,82 @@ const props = defineProps<{
 const emit = defineEmits<{
   'close': []
   'skill-installed': []
+  'run-validator': []
 }>()
 
-const skills = ref<SkillItem[]>([])
+const extensions = ref<ExtensionItem[]>([])
 const isLoading = ref(true)
 const searchQuery = ref('')
-const activeFilter = ref<'all' | 'installed'>('all')
+const activeFilter = ref<'all' | 'plugins' | 'skills' | 'installed'>('all')
 const installingName = ref<string | null>(null)
 const successMsg = ref<string | null>(null)
 const errorMsg = ref<string | null>(null)
 
-async function fetchSkills() {
+async function fetchExtensions() {
   isLoading.value = true
   try {
     const list = await window.electronAPI?.listSkills?.(props.projectPath)
     if (list) {
-      skills.value = list
+      extensions.value = list
     }
   } catch (err: any) {
-    errorMsg.value = 'Gagal memuat daftar AI skills.'
+    errorMsg.value = 'Gagal memuat daftar ekstensi & plugins.'
   } finally {
     isLoading.value = false
   }
 }
 
-const filteredSkills = computed(() => {
-  return skills.value.filter(skill => {
-    const matchesSearch = skill.title.toLowerCase().includes(searchQuery.value.toLowerCase()) ||
-                          skill.description.toLowerCase().includes(searchQuery.value.toLowerCase()) ||
-                          skill.name.toLowerCase().includes(searchQuery.value.toLowerCase())
+const filteredExtensions = computed(() => {
+  return extensions.value.filter(item => {
+    const matchesSearch = item.title.toLowerCase().includes(searchQuery.value.toLowerCase()) ||
+                          item.description.toLowerCase().includes(searchQuery.value.toLowerCase()) ||
+                          item.name.toLowerCase().includes(searchQuery.value.toLowerCase())
     
-    if (activeFilter.value === 'installed') {
-      return matchesSearch && skill.isInstalled
-    }
-    return matchesSearch
+    if (!matchesSearch) return false
+
+    if (activeFilter.value === 'installed') return item.isInstalled
+    if (activeFilter.value === 'plugins') return item.type === 'plugin'
+    if (activeFilter.value === 'skills') return item.type === 'skill'
+    return true
   })
 })
 
-const installedCount = computed(() => skills.value.filter(s => s.isInstalled).length)
+const installedCount = computed(() => extensions.value.filter(s => s.isInstalled).length)
+const pluginCount = computed(() => extensions.value.filter(s => s.type === 'plugin').length)
+const skillCount = computed(() => extensions.value.filter(s => s.type === 'skill').length)
 
-async function installSkill(skillName: string) {
+async function installExtension(item: ExtensionItem) {
   if (!props.projectPath) {
-    errorMsg.value = 'Silakan buka folder proyek terlebih dahulu sebelum memasang skill.'
+    errorMsg.value = 'Silakan buka folder proyek terlebih dahulu sebelum memasang ekstensi.'
     return
   }
 
-  installingName.value = skillName
+  installingName.value = item.name
   errorMsg.value = null
   successMsg.value = null
 
   try {
-    const res = await window.electronAPI?.installSkill?.(props.projectPath, skillName)
+    const res = await window.electronAPI?.installSkill?.(props.projectPath, item.name)
     if (res?.success) {
-      successMsg.value = `Skill "${skillName}" berhasil dipasang ke .agents/skills/`
-      // Refresh list status
-      await fetchSkills()
+      const typeLabel = item.type === 'plugin' ? 'Plugin' : 'AI Skill'
+      successMsg.value = `${typeLabel} "${item.title}" berhasil dipasang ke proyek!`
+      await fetchExtensions()
       emit('skill-installed')
     } else {
-      errorMsg.value = res?.error || 'Gagal memasang skill.'
+      errorMsg.value = res?.error || 'Gagal memasang ekstensi.'
     }
   } catch (err: any) {
-    errorMsg.value = err.message || 'Terjadi kesalahan sistem saat memasang skill.'
+    errorMsg.value = err.message || 'Terjadi kesalahan sistem saat memasang ekstensi.'
   } finally {
     installingName.value = null
   }
 }
 
-onMounted(fetchSkills)
+function handleRunValidator() {
+  emit('run-validator')
+}
+
+onMounted(fetchExtensions)
 </script>
 
 <template>
@@ -98,7 +101,7 @@ onMounted(fetchSkills)
           <span>Kembali</span>
         </button>
         <div class="topbar-divider"></div>
-        <h1 class="page-title">AI Skills & Rules Store</h1>
+        <h1 class="page-title">Extensions & Plugins Hub</h1>
       </div>
     </header>
 
@@ -106,7 +109,7 @@ onMounted(fetchSkills)
     <div class="store-container">
       <!-- Left Sidebar Navigation -->
       <aside class="store-sidebar">
-        <div class="nav-section-title">SKILLS & RULES</div>
+        <div class="nav-section-title">KATEGORI</div>
         
         <button 
           class="nav-item" 
@@ -114,9 +117,32 @@ onMounted(fetchSkills)
           @click="activeFilter = 'all'"
         >
           <Layers :size="15" />
-          <span>Semua Skills</span>
-          <span class="count-badge">{{ skills.length }}</span>
+          <span>Semua Ekstensi</span>
+          <span class="count-badge">{{ extensions.length }}</span>
         </button>
+
+        <button 
+          class="nav-item" 
+          :class="{ active: activeFilter === 'plugins' }" 
+          @click="activeFilter = 'plugins'"
+        >
+          <Wrench :size="15" />
+          <span>Plugins & Tools</span>
+          <span class="count-badge">{{ pluginCount }}</span>
+        </button>
+
+        <button 
+          class="nav-item" 
+          :class="{ active: activeFilter === 'skills' }" 
+          @click="activeFilter = 'skills'"
+        >
+          <Sparkles :size="15" />
+          <span>AI Skills & Rules</span>
+          <span class="count-badge">{{ skillCount }}</span>
+        </button>
+
+        <div class="nav-divider"></div>
+        <div class="nav-section-title">STATUS PROYEK</div>
 
         <button 
           class="nav-item" 
@@ -124,7 +150,7 @@ onMounted(fetchSkills)
           @click="activeFilter = 'installed'"
         >
           <ShieldCheck :size="15" />
-          <span>Terpasang</span>
+          <span>Terpasang di Proyek</span>
           <span class="count-badge active-badge">{{ installedCount }}</span>
         </button>
       </aside>
@@ -132,7 +158,7 @@ onMounted(fetchSkills)
       <!-- Store Main View -->
       <main class="store-main custom-scroll">
         <div class="store-content">
-          <!-- Banner Section -->
+          <!-- Search Row -->
           <div class="store-header">
             <div class="search-bar-row">
               <div class="search-input-wrapper">
@@ -140,7 +166,7 @@ onMounted(fetchSkills)
                 <input 
                   type="text" 
                   v-model="searchQuery" 
-                  placeholder="Cari instruksi & aturan AI..." 
+                  placeholder="Cari plugins validator, alat bantu, dan aturan AI..." 
                   class="search-input"
                 />
               </div>
@@ -159,44 +185,67 @@ onMounted(fetchSkills)
           <!-- Loading State -->
           <div v-if="isLoading" class="loading-state">
             <Sparkles :size="20" class="spin icon-accent" />
-            <span>Memindai AI Skills dari public/skills/...</span>
+            <span>Memuat ekstensi dan plugins...</span>
           </div>
 
-          <!-- Skills Grid -->
-          <div v-else-if="filteredSkills.length > 0" class="skills-grid">
+          <!-- Extensions List -->
+          <div v-else-if="filteredExtensions.length > 0" class="skills-list">
             <div 
-              v-for="skill in filteredSkills" 
-              :key="skill.name" 
-              class="skill-card"
-              :class="{ 'installed-card': skill.isInstalled }"
+              v-for="item in filteredExtensions" 
+              :key="item.name" 
+              class="skill-item"
+              :class="{ 'installed-item': item.isInstalled }"
             >
-              <div class="card-header">
-                <div class="skill-icon-badge">
-                  <Zap :size="18" class="icon-accent" />
-                </div>
-                <div class="skill-meta">
-                  <h3 class="skill-title">{{ skill.title }}</h3>
-                  <span class="skill-folder-name"><code>.agents/skills/{{ skill.name }}</code></span>
+              <div class="item-left">
+                <div class="skill-icon-badge" :class="item.type === 'plugin' ? 'badge-plugin' : 'badge-skill'">
+                  <Wrench v-if="item.type === 'plugin'" :size="18" />
+                  <Zap v-else :size="18" />
                 </div>
               </div>
 
-              <p class="skill-desc">{{ skill.description }}</p>
+              <div class="item-content">
+                <div class="title-row">
+                  <div class="title-wrap">
+                    <h3 class="skill-title">{{ item.title }}</h3>
+                    <span class="type-pill" :class="item.type === 'plugin' ? 'pill-plugin' : 'pill-skill'">
+                      {{ item.type === 'plugin' ? 'PLUGIN' : 'AI SKILL' }}
+                    </span>
+                  </div>
+                  <span class="skill-folder-name">
+                    <code>{{ item.type === 'plugin' ? 'scripts/validator.js & validate.bat' : `.agents/skills/${item.name}` }}</code>
+                  </span>
+                </div>
 
-              <div class="card-footer">
-                <template v-if="skill.isInstalled">
+                <p class="skill-desc">{{ item.description }}</p>
+              </div>
+
+              <div class="item-actions">
+                <!-- Jalankan Validator Button for Validator Plugin -->
+                <button 
+                  v-if="item.canRun" 
+                  class="btn-run-tool" 
+                  @click="handleRunValidator"
+                  title="Jalankan pemeriksaan linter sekarang"
+                >
+                  <Play :size="13" />
+                  <span>Jalankan Validator</span>
+                </button>
+
+                <!-- Install Script / Skill Button -->
+                <template v-if="item.isInstalled">
                   <span class="installed-tag">
                     <Check :size="13" />
-                    <span>Terpasang di Proyek</span>
+                    <span>{{ item.type === 'plugin' ? 'Script Terpasang' : 'Terpasang' }}</span>
                   </span>
                 </template>
                 <template v-else>
                   <button 
                     class="btn-install" 
-                    :disabled="installingName === skill.name"
-                    @click="installSkill(skill.name)"
+                    :disabled="installingName === item.name"
+                    @click="installExtension(item)"
                   >
                     <Download :size="13" />
-                    <span>{{ installingName === skill.name ? 'Memasang...' : 'Install ke Proyek' }}</span>
+                    <span>{{ installingName === item.name ? 'Memasang...' : (item.type === 'plugin' ? 'Pasang Script (BAT)' : 'Install ke Proyek') }}</span>
                   </button>
                 </template>
               </div>
@@ -206,8 +255,8 @@ onMounted(fetchSkills)
           <!-- Empty State -->
           <div v-else class="empty-state">
             <Package :size="36" class="empty-icon" />
-            <h3>Tidak Ada Skill Ditemukan</h3>
-            <p>Tidak ada instruksi AI yang cocok dengan pencarian Anda.</p>
+            <h3>Tidak Ada Ekstensi Ditemukan</h3>
+            <p>Tidak ada ekstensi yang cocok dengan kriteria pencarian Anda.</p>
           </div>
         </div>
       </main>
@@ -251,27 +300,31 @@ onMounted(fetchSkills)
   display: flex;
   align-items: center;
   gap: 6px;
-  font-size: 12.5px;
-  transition: background 0.15s, color 0.15s;
+  font-size: 12px;
+  font-weight: 500;
+  transition: all 0.15s ease;
 }
 .back-btn:hover {
   background: rgba(255, 255, 255, 0.08);
   color: #fff;
+  border-color: rgba(255, 255, 255, 0.2);
 }
 
 .topbar-divider {
   width: 1px;
-  height: 18px;
+  height: 20px;
   background: rgba(255, 255, 255, 0.1);
 }
 
 .page-title {
-  font-size: 15px;
+  font-size: 14px;
   font-weight: 600;
+  letter-spacing: -0.01em;
+  color: #fff;
   margin: 0;
-  color: #f8fafc;
 }
 
+/* Store Layout */
 .store-container {
   flex: 1;
   display: flex;
@@ -280,12 +333,13 @@ onMounted(fetchSkills)
 
 .store-sidebar {
   width: 220px;
-  background: #141622;
   border-right: 1px solid rgba(255, 255, 255, 0.08);
-  padding: 20px 12px;
+  background: #12141e;
+  padding: 16px 12px;
   display: flex;
   flex-direction: column;
   gap: 4px;
+  flex-shrink: 0;
 }
 
 .nav-section-title {
@@ -293,164 +347,268 @@ onMounted(fetchSkills)
   font-weight: 700;
   letter-spacing: 0.08em;
   color: #64748b;
-  padding: 4px 10px 8px;
+  padding: 8px 10px 4px;
+}
+
+.nav-divider {
+  height: 1px;
+  background: rgba(255, 255, 255, 0.06);
+  margin: 10px 6px;
 }
 
 .nav-item {
   display: flex;
   align-items: center;
   gap: 10px;
-  padding: 9px 12px;
+  padding: 8px 12px;
   border-radius: 6px;
   background: transparent;
   border: none;
   color: #94a3b8;
-  font-size: 13px;
+  font-size: 12.5px;
+  font-weight: 500;
   cursor: pointer;
   text-align: left;
-  transition: background 0.15s, color 0.15s;
+  transition: all 0.15s ease;
+  position: relative;
 }
+
 .nav-item:hover {
   background: rgba(255, 255, 255, 0.05);
-  color: #f1f5f9;
+  color: #e2e8f0;
 }
+
 .nav-item.active {
-  background: var(--bg-hover);
-  color: var(--accent);
-  font-weight: 500;
+  background: rgba(124, 106, 247, 0.15);
+  color: #fff;
+  font-weight: 600;
 }
 
 .count-badge {
   margin-left: auto;
   font-size: 11px;
-  background: rgba(255, 255, 255, 0.08);
-  padding: 1px 7px;
+  color: #64748b;
+  padding: 1px 6px;
   border-radius: 10px;
-  color: #94a3b8;
+  background: rgba(255, 255, 255, 0.05);
 }
+
 .active-badge {
-  background: var(--accent-soft);
-  color: var(--accent);
+  color: #4ade80;
+  background: rgba(74, 222, 128, 0.15);
 }
 
 .store-main {
   flex: 1;
-  padding: 30px 40px;
   overflow-y: auto;
+  padding: 24px 32px;
 }
 
 .store-content {
-  max-width: 900px;
+  max-width: 960px;
+  margin: 0 auto;
   display: flex;
   flex-direction: column;
   gap: 20px;
 }
 
-.search-input-wrapper {
-  position: relative;
-  max-width: 400px;
-}
-.search-icon {
-  position: absolute;
-  left: 12px;
-  top: 50%;
-  transform: translateY(-50%);
-  color: #64748b;
-}
-.search-input {
-  width: 100%;
-  background: #161824;
-  border: 1px solid rgba(255, 255, 255, 0.1);
-  border-radius: 8px;
-  padding: 8px 12px 8px 36px;
-  color: #f8fafc;
-  font-size: 13px;
-}
-.search-input:focus {
-  border-color: var(--accent);
-  outline: none;
+/* Header & Search */
+.store-header {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
 }
 
-.toast {
-  padding: 10px 14px;
+.search-bar-row {
+  display: flex;
+  gap: 12px;
+}
+
+.search-input-wrapper {
+  flex: 1;
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+
+.search-icon {
+  position: absolute;
+  left: 14px;
+  color: #64748b;
+  pointer-events: none;
+}
+
+.search-input {
+  width: 100%;
+  background: #181a26;
+  border: 1px solid rgba(255, 255, 255, 0.1);
   border-radius: 8px;
-  font-size: 12.5px;
+  padding: 10px 14px 10px 38px;
+  color: #fff;
+  font-size: 13px;
+  outline: none;
+  transition: all 0.15s;
+}
+
+.search-input:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px rgba(124, 106, 247, 0.2);
+}
+
+/* Toast Messages */
+.toast {
   display: flex;
   align-items: center;
   gap: 8px;
-  animation: fadeIn 0.2s ease-in-out;
+  padding: 10px 16px;
+  border-radius: 8px;
+  font-size: 12px;
+  font-weight: 500;
+  animation: fadeIn 0.2s ease;
 }
+
 .toast-success {
-  background: rgba(16, 185, 129, 0.15);
-  border: 1px solid rgba(16, 185, 129, 0.3);
-  color: #6ee7b7;
+  background: rgba(74, 222, 128, 0.15);
+  border: 1px solid rgba(74, 222, 128, 0.3);
+  color: #4ade80;
 }
+
 .toast-error {
-  background: rgba(239, 68, 68, 0.15);
-  border: 1px solid rgba(239, 68, 68, 0.3);
-  color: #fca5a5;
+  background: rgba(248, 113, 113, 0.15);
+  border: 1px solid rgba(248, 113, 113, 0.3);
+  color: #f87171;
 }
 
-.skills-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
-  gap: 16px;
+/* Loading State */
+.loading-state {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  padding: 60px 0;
+  color: #94a3b8;
+  font-size: 13px;
 }
 
-.skill-card {
-  background: #161824;
-  border: 1px solid rgba(255, 255, 255, 0.08);
-  border-radius: 10px;
-  padding: 16px;
+.spin {
+  animation: spin 1s linear infinite;
+}
+
+@keyframes spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
+/* List & Items */
+.skills-list {
   display: flex;
   flex-direction: column;
-  justify-content: space-between;
-  gap: 14px;
-  transition: border-color 0.2s, transform 0.2s;
-}
-.skill-card:hover {
-  border-color: rgba(255, 255, 255, 0.15);
-  transform: translateY(-2px);
-}
-.installed-card {
-  border-color: var(--accent-soft);
-  background: rgba(22, 24, 36, 0.7);
+  gap: 10px;
 }
 
-.card-header {
+.skill-item {
+  background: #161826;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 10px;
+  padding: 16px 18px;
   display: flex;
-  gap: 12px;
-  align-items: flex-start;
+  align-items: center;
+  gap: 16px;
+  transition: all 0.2s ease;
+}
+
+.skill-item:hover {
+  border-color: rgba(255, 255, 255, 0.16);
+  background: #181b2b;
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.25);
+}
+
+.installed-item {
+  border-color: rgba(74, 222, 128, 0.2);
+}
+
+.item-left {
+  flex-shrink: 0;
 }
 
 .skill-icon-badge {
-  width: 36px;
-  height: 36px;
+  width: 40px;
+  height: 40px;
   border-radius: 8px;
-  background: rgba(255, 255, 255, 0.04);
   display: flex;
   align-items: center;
   justify-content: center;
   flex-shrink: 0;
 }
 
-.skill-meta {
+.badge-skill {
+  background: rgba(124, 106, 247, 0.15);
+  color: var(--accent);
+}
+
+.badge-plugin {
+  background: rgba(56, 189, 248, 0.15);
+  color: #38bdf8;
+}
+
+.item-content {
+  flex: 1;
+  min-width: 0;
   display: flex;
   flex-direction: column;
-  gap: 2px;
+  gap: 6px;
+}
+
+.title-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.title-wrap {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
 }
 
 .skill-title {
   font-size: 14px;
   font-weight: 600;
-  color: #f8fafc;
+  color: #fff;
   margin: 0;
+}
+
+.type-pill {
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  padding: 2px 7px;
+  border-radius: 4px;
+  white-space: nowrap;
+}
+
+.pill-plugin {
+  background: rgba(56, 189, 248, 0.15);
+  color: #38bdf8;
+  border: 1px solid rgba(56, 189, 248, 0.3);
+}
+
+.pill-skill {
+  background: rgba(124, 106, 247, 0.15);
+  color: var(--accent);
+  border: 1px solid rgba(124, 106, 247, 0.3);
 }
 
 .skill-folder-name code {
   font-size: 11px;
   color: #64748b;
-  font-family: monospace;
+  font-family: 'JetBrains Mono', monospace;
+  background: rgba(255, 255, 255, 0.04);
+  padding: 2px 6px;
+  border-radius: 4px;
 }
 
 .skill-desc {
@@ -460,59 +618,95 @@ onMounted(fetchSkills)
   margin: 0;
 }
 
-.card-footer {
-  padding-top: 8px;
-  border-top: 1px solid rgba(255, 255, 255, 0.05);
+.item-actions {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding-left: 8px;
+}
+
+.btn-run-tool {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 12px;
+  border-radius: 6px;
+  background: #38bdf8;
+  color: #0f172a;
+  border: none;
+  font-size: 11.5px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.btn-run-tool:hover {
+  background: #7dd3fc;
 }
 
 .btn-install {
-  width: 100%;
-  padding: 7px 12px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 12px;
   border-radius: 6px;
-  background: var(--accent);
-  color: #fff;
-  border: none;
-  font-size: 12px;
+  background: rgba(255, 255, 255, 0.08);
+  color: #e2e8f0;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  font-size: 11.5px;
   font-weight: 500;
   cursor: pointer;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 6px;
-  transition: filter 0.15s;
+  transition: all 0.15s ease;
 }
+
 .btn-install:hover:not(:disabled) {
-  filter: brightness(1.1);
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
 }
+
 .btn-install:disabled {
-  opacity: 0.5;
+  opacity: 0.6;
   cursor: default;
 }
 
 .installed-tag {
-  display: flex;
+  display: inline-flex;
   align-items: center;
   gap: 6px;
-  font-size: 12px;
-  color: #10b981;
+  font-size: 11.5px;
   font-weight: 500;
+  color: #4ade80;
+  padding: 5px 8px;
+  border-radius: 6px;
+  background: rgba(74, 222, 128, 0.1);
 }
 
-.loading-state, .empty-state {
-  padding: 40px;
+.empty-state {
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 10px;
-  color: #94a3b8;
+  justify-content: center;
+  padding: 60px 0;
   text-align: center;
 }
 
-.icon-accent { color: var(--accent); }
-.spin { animation: spin 1s linear infinite; }
+.empty-icon {
+  color: #475569;
+  margin-bottom: 12px;
+}
 
-@keyframes spin {
-  from { transform: rotate(0deg); }
-  to { transform: rotate(360deg); }
+.empty-state h3 {
+  font-size: 14px;
+  font-weight: 600;
+  color: #e2e8f0;
+  margin-bottom: 4px;
+}
+
+.empty-state p {
+  font-size: 12px;
+  color: #64748b;
+  margin: 0;
 }
 </style>
